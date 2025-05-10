@@ -1,0 +1,46 @@
+egoschema:
+  frame_fps: 1
+  num_examples_to_run: 1000
+  frame_path: ./outputs/egoschema_frames
+  feature_path: ./outputs/egoschema_features
+  video_path: D:/datasets/egoschema/videos
+  data_path: D:/datasets/LLoVi_caption/egoschema/lavila_subset.json 
+  anno_path: D:/datasets/LLoVi_caption/egoschema/subset_anno.json 
+  duration_path: D:/datasets/LLoVi_caption/egoschema/duration.json
+  subset_path: D:/datasets/egoschema/subset_answers.json
+  width_res_path: ./outputs/egoschema/width_res.json
+  depth_res_path: ./outputs/egoschema/depth_res.json
+
+nextoe:
+  frame_fps: 1
+  num_examples_to_run: 100
+  map_path: D:/datasets/nextqa/map_vid_vidorID.json
+  frame_path: ./outputs/nextqa_frames
+  feature_path: ./outputs/nextqa_features
+  video_path: D:/datasets/nextqa/NExTVideo
+  anno_path: D:/datasets/nextqa/OE
+  stopwords_path: D:/datasets/nextqa/stopwords.csv
+  width_res_path: ./outputs/nextqa/width_res.json
+  depth_res_path: ./outputs/nextqa/depth_res.json
+
+nextmc:
+  frame_fps: 1
+  num_examples_to_run: 100
+  stopwords_path: D:/datasets/nextqa/stopwords.csv
+  map_path: D:/datasets/nextqa/map_vid_vidorID.json
+  frame_path: ./outputs/nextqa_frames
+  feature_path: ./outputs/nextqa_features
+  video_path: D:/datasets/nextqa/NExTVideo
+  anno_path: D:/datasets/nextqa/MC
+  width_res_path: ./outputs/nextqa/width_res.jsonl
+  depth_res_path: ./outputs/nextqa/depth_res.jsonl
+
+moviechat:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: D:/datasets/MovieChat-1K
+  frame_path: ./outputs/moviechat_frames
+  feature_path: ./outputs/moviechat_features
+  anno_path: D:/datasets/MovieChat-1K
+  width_res_path: ./outputs/moviechat/width_res.json
+  depth_res_path: ./outputs/moviechat/depth_res.json

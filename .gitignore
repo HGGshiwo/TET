@@ -1,0 +1,11 @@
+.vscode/
+outputs/
+__pycache__/
+.env
+ffmpeg/
+test123/
+test124/
+test125/
+test/
+*.png
+*.pt
