@@ -24,10 +24,6 @@ import numpy as np
 import torch.nn.functional as F
 import clip
 
-load_dotenv()
-# client = OpenAI()
-client = AsyncOpenAI()
-
 class LLavaModel:
     def __init__(self, pretrained_path):
         if pretrained_path is None:
@@ -169,30 +165,36 @@ class ClipModel:
             sim = image_features @ text_features.T
             return sim  #(B, N, M)  
 
+class APIModel:
+    def __init__(self, model_name):
+        load_dotenv()
+        self.client = AsyncOpenAI()
+        self.model_name = model_name
+    
+    async def forward(self, user_text, frame=None):
+        content = [{"type": "text", "text": user_text}]
+        if frame is not None:
+            img = image2base64(frame)
+            content.append({"type": "image_url", "image_url": {"url": img}})
+        out = await self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": content}],
+            temperature=0,
+        )
+        out = out.choices[0].message
+        return out.content
+
 def create_model(model_type, pretrained_path=None):
     model_type_map = {
         "llava": LLavaModel,
         "qwenvl": QwenModel,
         "clip": ClipModel,
         "open_clip": OpenClipModel,
+        "api": APIModel,
     }
     if model_type not in model_type_map:
         raise ValueError(f"Unsupported model type: {model_type}")
     return model_type_map[model_type](pretrained_path)
-
-async def api_forward(user_text, frame=None):
-    content = [{"type": "text", "text": user_text}]
-    if frame is not None:
-        img = image2base64(frame)
-        content.append({"type": "image_url", "image_url": {"url": img}})
-    out = await client.chat.completions.create(
-        model="gpt-4o",
-        # model="qwen-vl-max",
-        messages=[{"role": "user", "content": content}],
-        temperature=0,
-    )
-    out = out.choices[0].message
-    return out.content
 
 
 def list2dict(path, level=1):
@@ -295,6 +297,7 @@ def generate_table(row_names, data_dict, filter=True):
     markdown_table = "\n".join([header_row, separator_row] + content_rows)
 
     return markdown_table
+
 
 def make_grid(image_list, pad_width = 10):
     if len(image_list) > 8:

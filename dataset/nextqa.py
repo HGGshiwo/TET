@@ -55,6 +55,11 @@ class NextMCDataset(NextQADataset):
                 if f"{choice}." in response:
                     candidates.append(choice)
 
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A. B. C. D.
+                if f"{choice}:" in response:
+                    candidates.append(choice)
+                    
         # if all above doesn't get candidates, check if the content is larger than 5 tokens and try to parse the example
         if len(candidates) == 0 and len(response.split()) > 5:
             for index, ans in index2ans.items():
@@ -63,7 +68,9 @@ class NextMCDataset(NextQADataset):
                     index_ans = False  # it's content ans.
 
         if len(candidates) == 0:  # still not get answer, randomly choose one.
-            pred_index = random.choice(all_choices)
+            # pred_index = random.choice(all_choices)
+            # pred_index = all_choices[0]  # use the first one as default
+            pred_index = None
         elif len(candidates) > 1:
             start_indexes = []
             if index_ans:
@@ -167,6 +174,8 @@ class NextMCDataset(NextQADataset):
             parsed_pred = self.parse_multi_choice_response(
                 pred, all_choices, index2ans
             )
+            if parsed_pred is None:
+                print("None", item["qid"])
             if parsed_pred == item["truth"]:
                 results["correct_num"] += 1
             else:

@@ -9,22 +9,19 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from tqdm import tqdm
 from utils import load_data
-from task_utils import api_forward
+from task_utils import create_model, load_jsonl2dict
 import asyncio
 import jsonlines
 import decord
-from run_test2 import load_jsonl2dict
+# from run_test2 import load_jsonl2dict
 import json
 from tasks import Description
-
-load_dotenv()
-client = OpenAI()
 
 
 async def run_task(data, prompt, sem):
     async with sem:
         try:
-            out = await api_forward(prompt)
+            out = await model.forward(prompt)
             return data, {"qid": data["qid"], "pred": out, "prompt": prompt}
         except Exception as e:
             print(e)
@@ -36,9 +33,10 @@ exp_name = "0329"
 task_type = Description()
 
 async def eval():
-    args = HfArgumentParser(GeneratingArguments).parse_args_into_dataclasses()[0]
+    dataset_config = "./configs/dataset.yml"
+    dataset_name = "nextmc_test"
 
-    dataset = build_dataset(args.dataset_config, args.dataset_name, is_training=False)
+    dataset = build_dataset(dataset_config, dataset_name, is_training=False)
     enhance = False
     explain = True
     prompt_explain = "After selecting your answer, rate your confidence level in this choice on a scale from 1 to 100, where 1 indicates low confidence and 100 signifies high confidence. Please provide a concise one-sentence explanation for your chosen answer." if explain else "You must not provide any other response or explanation"
@@ -46,7 +44,8 @@ async def eval():
     input_path = f"./outputs/{exp_name}/nextmc_gpt_4o_tree2.jsonl"
     name2 = "_explain" if explain else ""
     name2 = name2 + "_enhance" if enhance else name2
-    output_path = f"./outputs/{exp_name}/nextmc_gpt_4o_tree3{name2}.jsonl"
+    # output_path = f"./outputs/{exp_name}/nextmc_gpt_4o_tree3{name2}.jsonl"
+    output_path = f"./outputs/test/nextmc_gpt_4o_tree3_raw.jsonl"
     
     if not enhance:
         # narr_path = "D:/datasets/LLoVi_caption/nextqa/llava1.5_fps1.json"
@@ -118,4 +117,5 @@ async def eval():
 
 
 if __name__ == "__main__":
+    model = create_model("api", "gpt-4o")
     asyncio.run(eval())
