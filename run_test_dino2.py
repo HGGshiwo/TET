@@ -64,7 +64,7 @@ def frame_select(runner, **data):
                 try:
                     idx = pred_obj.index(label.lower())
                 except ValueError:
-                    idx = -10
+                    idx = -1
                     for j, obj in enumerate(pred_obj):
                         if label.lower() in obj:
                             idx = j
