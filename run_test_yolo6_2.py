@@ -1,4 +1,4 @@
-# 模型根据问题和回答选择视频帧
+# 直接使用分析
 from runner import AsyncRunner
 
 import asyncio

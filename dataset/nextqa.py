@@ -26,6 +26,7 @@ class NextMCDataset(NextQADataset):
         https://github.com/MMMU-Benchmark/MMMU/blob/51ce7f3e829c16bb44bc5445782686b4c3508794/eval/eval_utils.py#L10
         """
         candidates = []
+        response = response.replace("*", "")
         str_list = [r.strip() for r in response.split("\n") if r.strip() != ""]
         for res in str_list:
             res = res.split(":")[-1].strip()
@@ -35,6 +36,7 @@ class NextMCDataset(NextQADataset):
         
         for char in [",", ".", "!", "?", ";", ":", "'"]:
             response = response.strip(char)
+        
         response = " " + response + " "  # add space to avoid partial match
 
         index_ans = True
@@ -59,7 +61,12 @@ class NextMCDataset(NextQADataset):
             for choice in all_choices:  # e.g., A. B. C. D.
                 if f"{choice}:" in response:
                     candidates.append(choice)
-                    
+        
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A. B. C. D.
+                if response.strip().startswith(choice):
+                    candidates.append(choice)
+                                
         # if all above doesn't get candidates, check if the content is larger than 5 tokens and try to parse the example
         if len(candidates) == 0 and len(response.split()) > 5:
             for index, ans in index2ans.items():
@@ -167,7 +174,7 @@ class NextMCDataset(NextQADataset):
 
     def get_compute_metrics2(self):
         results = dict(total_num=0, correct_num=0)
-
+        failed_list = []
         def compute_metrics(pred, item, compute_result):
             doc = {f"a{j}": item[f"cm_a{j}"] for j in range(5)}
             index2ans, all_choices = self.get_multi_choice_info(doc)
@@ -175,16 +182,17 @@ class NextMCDataset(NextQADataset):
                 pred, all_choices, index2ans
             )
             if parsed_pred is None:
-                print("None", item["qid"])
+                print(f"{item['qid']} is None")
             if parsed_pred == item["truth"]:
                 results["correct_num"] += 1
             else:
-                print(item["qid"])
+                failed_list.append(item["qid"])
             results["total_num"] += 1
             
             if compute_result:
                 return {
                     "acc": results["correct_num"] / results["total_num"],
+                    "failed": failed_list,
                 }
 
         return compute_metrics

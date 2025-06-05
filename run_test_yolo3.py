@@ -5,7 +5,7 @@ from utils import load_data
 rate = []
 total, valid = 0, 0
 
-def frame_select(**data):
+def frame_select(runner, **data):
     detect_res = detect_data[data["vid"]]["detect"]
     num_limit = num_data[data["qid"]]["maxmin"]
     relevant_idx = set()
@@ -53,10 +53,18 @@ def frame_select(**data):
 
 
 if __name__ == "__main__":
-    output_path = "./outputs/0413/select.jsonl"
-    detect_data = load_data("./outputs/0404/yolo.jsonl")
-    num_data = load_data("./outputs/0411/yolo_maxmin.jsonl")
-    runner = Runner(frame_select, output_path, iter_key="qid")
+    # exp_name = "0413"
+    exp_name = "0522"
+    
+    dataset_name = "egoschema_subset"
+    # dataset_name = "nextmc_test"
+    
+    output_path = f"./outputs/{exp_name}/select.jsonl"
+    # detect_data = load_data("./outputs/0404/yolo.jsonl")
+    detect_data = load_data("./outputs/0522/yolo.jsonl")
+    # num_data = load_data("./outputs/0411/yolo_maxmin.jsonl")
+    num_data = load_data("./outputs/0522/yolo_maxmin_gpt-4o.jsonl")
+    runner = Runner(frame_select, output_path, iter_key="qid", dataset=dataset_name)
     runner()
     print(np.mean(rate))
     print(f"valid: {valid/total}({valid}/{total})")

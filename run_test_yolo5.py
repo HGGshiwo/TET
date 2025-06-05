@@ -1,7 +1,7 @@
 # 2. 给出起始帧描述，然后让模型给出问题
 from runner import Runner, AsyncRunner
 from utils import load_data
-from task_utils import api_forward, create_model
+from task_utils import create_model
 import asyncio
 
 PROMPT = "Please provide a brief answer to the following questions: [question], output the answer directly without other text, if there is not enough information in the frame, just answer 'not know', seperate an with line breaks. Output Example:\n1: answer1\n2: answer2\n3: answer3"
@@ -28,7 +28,7 @@ def filter(data):
     return False
 
 
-def frame_select(**data):
+def frame_select(runner, **data):
     qid = data["qid"]
     question = "\n".join(
         [f"{i+1}: {q}" for i, q in enumerate(question_data[qid]["question"])]
@@ -68,14 +68,14 @@ def frame_select2(runner, batch_data):
         batch_out2.append(out)
     return batch_out2
 
-async def async_frame_select(**data):
+async def async_frame_select(runner, **data):
     qid = data["qid"]
     question = "\n".join(
         [f"{i+1}: {q}" for i, q in enumerate(question_data[qid]["question"])]
     )
     prompt = PROMPT.replace("[question]", question)
     try:
-        out = await api_forward(prompt, data["frame"])
+        out = await model.forward(prompt, data["frame"])
         out = parse(out, len(question_data[qid]["question"]))
         out = {"answer": out, "qid": qid, "idx": data["idx"]}
     except Exception as e:
@@ -85,22 +85,38 @@ async def async_frame_select(**data):
 
 
 if __name__ == "__main__":
-    use_api = False
-    use_qwen = True
-    batch_size = 8
-    output_path = "./outputs/0420/answer.jsonl"
-    select_data = load_data("./outputs/0413/select.jsonl")
-    question_data = load_data("./outputs/0404/question.jsonl")
-
-    if not use_api:
-        model_type = "qwen" if use_qwen else "llava"
-        model = create_model(model_type)
+    
+    model_name = "gpt-4o"
+    # model_name = "qwen"
+    # model_name = "llava"
+    
+    # exp_name = "0420"
+    exp_name = "0522"
+    
+    output_path = f"./outputs/{exp_name}/answer_{model_name}.jsonl"
+    
+    # select_data = load_data("./outputs/0413/select.jsonl")
+    select_data = load_data("./outputs/0522/select.jsonl")
+    
+    # question_data = load_data("./outputs/0404/question.jsonl")
+    question_data = load_data("./outputs/0522/question_gpt-4o.jsonl")
+    
+    # dataset_name = "nextmc_test"
+    dataset_name = "egoschema_subset"
+    
+    use_api = model_name in ["gpt-4o"]
+    kwargs = {}
+    if use_api:
+        model = create_model("api", model_name)
+    else:
+        model = create_model(model_name)
+        kwargs = {"batch_size": 8}    
         
     task_func = None
     if use_api:
         task_func = async_frame_select 
     else:
-        if batch_size == 1:
+        if kwargs.get("batch_size", 1) == 1:
             task_func = frame_select
         else:
             task_func = frame_select2
@@ -113,7 +129,8 @@ if __name__ == "__main__":
         iter_frame=True,
         video_fps=1,
         filter=filter,
-        batch_size=batch_size,
+        dataset=dataset_name,
+        **kwargs,
     )
     if use_api:
         asyncio.run(runner())

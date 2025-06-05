@@ -26,7 +26,12 @@ def detect_video(runner, **data):
 
 
 if __name__ == "__main__":
-    output_path = "./outputs/0404/yolo.jsonl"
+    # exp_name = "0404"
+    exp_name = "0522"
+    # dataset_name = "nextmc_test"
+    dataset_name = "egoschema_subset"
+    
+    output_path = f"./outputs/{exp_name}/yolo.jsonl"
     model = YOLO("yolo11n.pt").to("cuda:0")
-    runner = Runner(detect_video, output_path, iter_key="vid")
+    runner = Runner(detect_video, output_path, iter_key="vid", dataset=dataset_name)
     runner()

@@ -1,13 +1,13 @@
 
-from runner import async_run_task
+from runner import AsyncRunner
 import decord
 decord.bridge.set_bridge("torch")
-from task_utils import api_forward
+from task_utils import create_model
 import asyncio
 
-async def task(**data):
+async def task(runner, **data):
     try:
-        out = await api_forward("describe the frame", data["frame"])
+        out = await model.forward("describe the frame", data["frame"])
     except Exception as e:
         print(e)
         out = None
@@ -16,5 +16,14 @@ async def task(**data):
     return {"vid": data["vid"], "idx": data["idx"], "caption": out}
 
 if __name__ == "__main__":
-    output_path = "./outputs/0329/nextmc_gpt_4o.jsonl"
-    asyncio.run(async_run_task(task, output_path, iter_key="vid", iter_frame=True, video_fps=1))
+    # exp_name = "0329"
+    exp_name = "0522"
+    
+    # dataset_name = "nextmc_test"
+    dataset_name = "egoschema_subset"
+    
+    model_name = "gpt-4o"
+    model = create_model('api', model_name)
+    output_path = f"./outputs/{exp_name}/{dataset_name}_{model_name}.jsonl"
+    runner = AsyncRunner(task, output_path, iter_key="vid", iter_frame=True, video_fps=1, dataset=dataset_name)
+    asyncio.run(runner())

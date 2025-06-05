@@ -1,12 +1,13 @@
-# 模型根据问题和回答选择视频帧
+# 使用问答，而不是分析
 from runner import AsyncRunner
 
 import asyncio
 from utils import load_data
-from task_utils import parse_json, api_forward, generate_table
+from task_utils import parse_json, create_model, generate_table
 
 PROMPT = "Here is a markdown table:\n[table]\nEach row represents a question, and each column represents the answer to the question corresponding to the frame number at that time. According to the table, what is the time segment corresponding to question [question]? Note that if the question contains time-related words, you need to take this into consideration when selecting the segment. For example, if the question contains 'after' an event, you should select the segment after the event, not the segment where the event itself is located. If the original question says in the beginning/middle/end of the video, this refers to the first/middle/last 30% of the frames. Output a json string, with the keys 'explain' and 'time'. When the key is 'explain', the value is the reason for selecting the time period. When the key is 'time', the value is a list like string, which allows number or number-number to represent a specific frame number or the start to end of the frame number as the element of the list, for example '[0, 3-5, 7-8, 10]'. The number must range from 0 to [video_length]"
 
+PROMPT2 = "Here is a markdown table:\n[table]\nEach row represents a phrase, and each column analyzes whether the current frame is related to the phrase. According to the table, what is the time segment corresponding to question [question]? Note that if the question contains time-related words, you need to take this into consideration when selecting the segment. For example, if the question contains 'after' an event, you should select the segment during and after the event. If the original question says in the beginning/middle/end of the video, this refers to the first/middle/last 30% of the frames. Output a json string, with the keys 'explain' and 'time'. When the key is 'explain', the value is the reason for selecting the time period. When the key is 'time', the value is a list like string, which allows number or number-number to represent a specific frame number or the start to end of the frame number as the element of the list, for example '[0, 3-5, 7-8, 10]'. The number must range from 0 to [video_length]"
 
 def parse(pred):
     pred = parse_json(pred)
@@ -42,7 +43,7 @@ async def frame_select(runner, **data):
     prompt = prompt.replace("[question]", question)
     prompt = prompt.replace("[video_length]", str(select_data[data["qid"]]["last"] - 1))
     try:
-        out = await api_forward(prompt)
+        out = await model.forward(prompt)
         ans = parse(out)
         out = {"answer": ans, "qid": qid, "pred": out, "prompt": prompt}
     except Exception as e:
@@ -52,14 +53,31 @@ async def frame_select(runner, **data):
 
 
 if __name__ == "__main__":
-    output_path = "./outputs/0420/select2.jsonl"
-    select_data = load_data("./outputs/0413/select.jsonl")
-    question_data = load_data("./outputs/0404/question.jsonl")
-    answer_data = load_data("./outputs/0420/answer.jsonl")
+    # exp_name = "0420"
+    exp_name = "0522"
+    
+    model_name = "gpt-4o"
+    
+    output_path = f"./outputs/{exp_name}/select2_{model_name}.jsonl"
+    
+    # dataset_name = "nextmc_test"
+    dataset_name = "egoschema_subset"
+    
+    # select_data = load_data("./outputs/0413/select.jsonl")
+    select_data = load_data("./outputs/0522/select.jsonl")
+    
+    # question_data = load_data("./outputs/0404/question.jsonl")
+    question_data = load_data("./outputs/0522/question_gpt-4o.jsonl")
+    
+    # answer_data = load_data("./outputs/0420/answer.jsonl")
+    answer_data = load_data("./outputs/0522/answer_gpt-4o.jsonl")
+    
+    model = create_model('api', model_name)
     runner = AsyncRunner(
         frame_select,
         output_path,
         iter_key="qid",
         filter=filter,
+        dataset=dataset_name
     )
     asyncio.run(runner())

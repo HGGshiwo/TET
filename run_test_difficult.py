@@ -1,7 +1,7 @@
 from pathlib import Path
 from runner import AsyncRunner
 import json
-from task_utils import api_forward, parse_json
+from task_utils import create_model, parse_json
 import asyncio 
 
 
@@ -16,7 +16,7 @@ PROMPT = f"This is a video-related question: [question]. In the absence of a vid
 async def detect_video(runner, **data):
     question = PROMPT.replace("[question]", data["question"])    
     try:
-        out = await api_forward(question)
+        out = await model.forward(question)
         out = parse_json(out)
         out["qid"] = data["qid"]
         out["prompt"] = question
@@ -28,6 +28,15 @@ async def detect_video(runner, **data):
     
 
 if __name__ == "__main__":
-    output_path = "./outputs/0510/filter.jsonl"
-    runner = AsyncRunner(detect_video, output_path, iter_key="qid")
+    # exp_name = "0510"
+    exp_name = "0522"
+    
+    dataset_name = "egoschema_subset"
+    # dataset_name = "nextmc_test"
+    
+    model_name = "gpt-4o"
+    model = create_model('api', model_name)
+    
+    output_path = f"./outputs/{exp_name}/filter_{model_name}_{dataset_name}.jsonl"
+    runner = AsyncRunner(detect_video, output_path, iter_key="qid", dataset=dataset_name)
     asyncio.run(runner())

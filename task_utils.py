@@ -23,7 +23,11 @@ from torchvision.utils import make_grid as tv_make_grid
 import numpy as np
 import torch.nn.functional as F
 import clip
-
+from LVNet.src.open_clip import create_model_and_transforms
+from transformers import AutoProcessor, Blip2ForImageTextRetrieval, AddedToken
+from lavis.models import load_model_and_preprocess
+from lavis.processors import load_processor
+    
 class LLavaModel:
     def __init__(self, pretrained_path):
         if pretrained_path is None:
@@ -164,6 +168,54 @@ class ClipModel:
             text_features /= text_features.norm(dim=-1, keepdim=True)
             sim = image_features @ text_features.T
             return sim  #(B, N, M)  
+        
+class ClipModel2:
+    def __init__(self, pretrained_path=None):
+        if pretrained_path is None:
+            pretrained_path = r"D:\models\clippy_5k.pt"
+        self.clippy, preprocess_train, self.preprocess_val = create_model_and_transforms(
+            "clippy-B-16",
+            device="cuda",
+            pretrained=pretrained_path
+        )
+        self.clip_size = (224, 224)
+    
+    def forward(self, keywords, images):
+        images = [self.preprocess_val(img) for img in images]
+        images = torch.stack(images, dim=0).cuda()
+        img_embed = self.clippy.encode_image(images.cuda(), pool=False)[:, 1:]
+        
+        keyword_embed = self.clippy.text.encode(keywords, convert_to_tensor=True)
+
+        nframe, nimgtokens, channels = img_embed.shape
+        keyword_embed = keyword_embed.unsqueeze(1)
+        img_embed = img_embed.flatten(0, 1).unsqueeze(0) 
+
+        simmat = F.cosine_similarity(keyword_embed, img_embed, dim=-1).to(torch.float)
+        return simmat.reshape(nframe, nimgtokens, -1)  # (B, N, M)
+
+class BlipModel:
+    def __init__(self, pretrained_path=None):
+        if pretrained_path is None:
+            pretrained_path = "D:/models/blip2-itm-vit-g"
+
+        self.model, self.vis_processors, self.text_processors = load_model_and_preprocess("blip2_image_text_matching", "coco", device="cuda", is_eval=True)
+
+
+    def forward(self, question, image):
+        img = torch.stack([self.vis_processors["eval"](m) for m in image], dim=0).to("cuda")
+        txt = [self.text_processors["eval"](q) for q in question]
+
+        # using "itm" or image-text matching (for predicting whether match or not)
+        itm_output = self.model({"image": img, "text_input": txt}, match_head="itc")
+        # itm_scores = torch.nn.functional.softmax(itm_output, dim=1)
+        # print(f'The image and text are matched with a probability of {itm_scores[:, 1].item():.3%}')
+        return itm_output
+    
+        # # using "itc" or image-text contrastive (for computing cosine similarity)
+        # itc_score = model({"image": img, "text_input": txt}, match_head='itc')
+        # print('The image feature and text feature has a cosine similarity of %.4f'%itc_score)
+
 
 class APIModel:
     def __init__(self, model_name):
@@ -189,6 +241,8 @@ def create_model(model_type, pretrained_path=None):
         "llava": LLavaModel,
         "qwenvl": QwenModel,
         "clip": ClipModel,
+        "clip2": ClipModel2,
+        "blip": BlipModel,
         "open_clip": OpenClipModel,
         "api": APIModel,
     }
@@ -224,7 +278,8 @@ def parse_json(pred, list=False):
             pred = json.loads(pred)
         except Exception as e:
             print(f"Error parsing JSON: {e}")
-            return {} if not list else []
+            # return {} if not list else []
+            return None
     return pred
 
 
@@ -299,13 +354,33 @@ def generate_table(row_names, data_dict, filter=True):
     return markdown_table
 
 
-def make_grid(image_list, pad_width = 10):
-    if len(image_list) > 8:
-        idx = np.linspace(0, len(image_list) - 1, 8).astype(int)
+def make_grid(image_list, max_frame=8, pad_width = 10):
+    image_split = {
+        1: [1, 1],
+        2: [1, 2],
+        3: [1, 3],
+        4: [2, 2],
+        5: [2, 3],
+        6: [2, 3],
+        7: [2, 4],
+        8: [2, 4],
+        9: [3, 3],
+        10: [3, 4],
+        11: [3, 4],
+        12: [3, 4],
+        13: [4, 4],
+        14: [4, 4],
+        15: [4, 4],
+        16: [4, 4],
+    }
+    assert max_frame < 17, "max_frame should be less than 17"
+    if len(image_list) > max_frame:
+        idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
         idx = list(set(idx))
         image_list = [image_list[i] for i in idx]
-    row_num = 1 if len(image_list) < 4 else 2
-    nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
+    row_num, col_num = image_split[len(image_list)]
+    # nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
+    nrow = col_num
     images = [torch.from_numpy(np.array(image)) for image in image_list]
     images += [torch.zeros_like(images[0])] * (nrow * row_num - len(image_list))
     images = torch.stack(images, dim=0).permute(0, 3, 1, 2)

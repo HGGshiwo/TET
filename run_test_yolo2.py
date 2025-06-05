@@ -2,7 +2,7 @@ from runner import AsyncRunner
 
 import json
 import asyncio
-from task_utils import api_forward
+from task_utils import create_model
 from task_utils import parse_json
 
 class_list = open("yolo_class.txt", "r").read()
@@ -13,16 +13,25 @@ prompt = f"Below is a question related to video: [question]. Analyze the objects
 async def task(runner, **data):
     try:
         _prompt = prompt.replace("[question]", data["question"].split("A. ")[0])
-        out = await api_forward(_prompt)
+        out = await model.forward(_prompt)
         out = parse_json(out)
     except Exception as e:
         print(e)
         out = None
     if out is not None:
         return {"qid": data["qid"], "maxmin": out}
+    return None
 
 
 if __name__ == "__main__":
-    output_path = "./outputs/0411/yolo_maxmin.jsonl"
-    runner = AsyncRunner(task, output_path, iter_key="qid")
+    # exp_name = "0411"
+    exp_name = "0522"
+    # dataset_name = "nextmc_test"
+    dataset_name = "egoschema_subset"
+    
+    model_name = "gpt-4o"
+    
+    output_path = f"./outputs/{exp_name}/yolo_maxmin_{model_name}.jsonl"
+    model = create_model('api', model_name)
+    runner = AsyncRunner(task, output_path, iter_key="qid", dataset=dataset_name)
     asyncio.run(runner())
