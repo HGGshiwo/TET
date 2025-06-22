@@ -89,9 +89,9 @@ if __name__ == "__main__":
     # exp_name = "0529"
     exp_name = "0531"
     
-    # model_name = "clip2"
+    model_name = "clip2"
     # model_name = "clip"
-    model_name = "blip"
+    # model_name = "blip"
     
     # relevant_type = "lvnet"
     relevant_type = "top1"

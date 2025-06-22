@@ -1,5 +1,6 @@
 import decord
 # from model.builder import build_model
+import supervision as sv
 
 decord.bridge.set_bridge("torch")
 import torch
@@ -25,9 +26,11 @@ import torch.nn.functional as F
 import clip
 from LVNet.src.open_clip import create_model_and_transforms
 from transformers import AutoProcessor, Blip2ForImageTextRetrieval, AddedToken
-from lavis.models import load_model_and_preprocess
-from lavis.processors import load_processor
-    
+# from lavis.models import load_model_and_preprocess
+# from lavis.processors import load_processor
+import cv2
+import math
+
 class LLavaModel:
     def __init__(self, pretrained_path):
         if pretrained_path is None:
@@ -232,6 +235,10 @@ class APIModel:
             model=self.model_name,
             messages=[{"role": "user", "content": content}],
             temperature=0,
+            frequency_penalty=0,
+            presence_penalty=0,
+            max_tokens=4096,
+            timeout=999
         )
         out = out.choices[0].message
         return out.content
@@ -372,8 +379,41 @@ def make_grid(image_list, max_frame=8, pad_width = 10):
         14: [4, 4],
         15: [4, 4],
         16: [4, 4],
+        17: [4, 5],
+        18: [4, 5],
+        19: [4, 5],
+        20: [4, 5],
+        21: [5, 5],
+        22: [5, 5],
+        23: [5, 5],
+        24: [5, 5],
+        25: [5, 5],
+        26: [5, 6],
+        27: [5, 6],
+        28: [5, 6],
+        29: [5, 6],
+        30: [5, 6],
+        31: [5, 7],
+        32: [5, 7],
+        33: [5, 7],
+        34: [5, 7],
+        35: [5, 7],
+        36: [6, 6],
+        37: [5, 8],
+        38: [5, 8],
+        39: [5, 8],
+        40: [5, 8],
+        41: [6, 7],
+        42: [6, 7],
+        43: [5, 9],
+        44: [5, 9],
+        45: [5, 9],
+        46: [6, 8],
+        47: [6, 8],
+        48: [6, 8],
+        49: [7, 7],
     }
-    assert max_frame < 17, "max_frame should be less than 17"
+    assert max_frame <= 49, "max_frame should be less than 49"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
         idx = list(set(idx))
@@ -388,3 +428,184 @@ def make_grid(image_list, max_frame=8, pad_width = 10):
     out = out.permute(1, 2, 0).numpy().astype(np.uint8)
     out = Image.fromarray(out)
     return out
+
+def make_crop_grid(image_list, boxes, max_frame=8, pad_width = 10):
+    image_split = {
+        1: [1, 1],
+        2: [1, 2],
+        3: [1, 3],
+        4: [2, 2],
+        5: [2, 3],
+        6: [2, 3],
+        7: [2, 4],
+        8: [2, 4],
+        9: [3, 3],
+        10: [3, 4],
+        11: [3, 4],
+        12: [3, 4],
+        13: [4, 4],
+        14: [4, 4],
+        15: [4, 4],
+        16: [4, 4],
+        17: [4, 5],
+        18: [4, 5],
+        19: [4, 5],
+        20: [4, 5],
+        21: [5, 5],
+        22: [5, 5],
+        23: [5, 5],
+        24: [5, 5],
+        25: [5, 5],
+        26: [5, 6],
+        27: [5, 6],
+        28: [5, 6],
+        29: [5, 6],
+        30: [5, 6],
+        31: [5, 7],
+        32: [5, 7],
+        33: [5, 7],
+        34: [5, 7],
+        35: [5, 7],
+        36: [6, 6],
+        37: [5, 8],
+        38: [5, 8],
+        39: [5, 8],
+        40: [5, 8],
+        41: [6, 7],
+        42: [6, 7],
+        43: [5, 9],
+        44: [5, 9],
+        45: [5, 9],
+        46: [6, 8],
+        47: [6, 8],
+        48: [6, 8],
+        49: [7, 7],
+    }
+    frame_limit = max(list(image_split.keys()))
+    assert max_frame <= frame_limit, f"max_frame should be less than {frame_limit}"
+    if len(image_list) > max_frame:
+        idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
+        idx = list(set(idx))
+        image_list = [image_list[i] for i in idx]
+        boxes = [boxes[i] for i in idx]
+    row_num, col_num = image_split[len(image_list)]
+    # nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
+    nrow = col_num
+    # images = [torch.from_numpy(np.array(image)) for image in image_list]
+    # images += [torch.zeros_like(images[0])] * (nrow * row_num - len(image_list))
+    image_w, image_h = image_list[0].size
+    xyxy_list = [get_xyxy(box) if len(box) != 0 else (0, 0, image_w, image_h) for box in boxes]
+    ratio = [math.fabs((xyxy[0] - xyxy[2]) / (xyxy[1] - xyxy[3])) for xyxy in xyxy_list]
+    avg_ratio = np.mean(ratio)
+    origin_w = int(image_w * avg_ratio)
+    origin_h = int(image_h)
+    total_w = int(origin_w * col_num + pad_width * (col_num - 1))
+    total_h = int(origin_h * row_num + pad_width * (row_num - 1))
+    out = Image.new("RGB", (total_w, total_h), (0, 0, 0))
+    for i, (img, xyxy) in enumerate(zip(image_list, xyxy_list)):
+        crop = crop_img(img, xyxy, (origin_w, origin_h))
+        row_idx = i // col_num
+        col_idx = i % col_num
+        x1 = col_idx * (origin_w + pad_width) + pad_width
+        y1 = row_idx * (origin_h + pad_width) + pad_width
+        out.paste(crop, (x1, y1))
+    # images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
+    # out = tv_make_grid(images, nrow=nrow, padding=pad_width)
+    # out = out.permute(1, 2, 0).numpy().astype(np.uint8)
+    # out = Image.fromarray(out)
+    return out
+
+def adjust_crop_box_to_aspect_strict(x1, y1, x2, y2, origin_w, origin_h):
+    crop_w = x2 - x1
+    crop_h = y2 - y1
+    origin_ratio = origin_w / origin_h
+    crop_ratio = crop_w / crop_h
+
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    if crop_ratio < origin_ratio:
+        # 需要增宽
+        new_w = int(origin_ratio * crop_h)
+        diff = new_w - crop_w
+        new_x1 = x1 - diff // 2
+        new_x2 = x2 + diff - diff // 2
+
+        # 边界调整
+        if new_x1 < 0:
+            new_x2 += -new_x1
+            new_x1 = 0
+        if new_x2 > origin_w:
+            shift = new_x2 - origin_w
+            new_x1 -= shift
+            new_x2 = origin_w
+        # 再次保证不超界
+        new_x1 = max(0, new_x1)
+        new_x2 = min(origin_w, new_x2)
+        new_y1, new_y2 = y1, y2
+
+    elif crop_ratio > origin_ratio:
+        # 需要增高
+        new_h = int(crop_w / origin_ratio)
+        diff = new_h - crop_h
+        new_y1 = y1 - diff // 2
+        new_y2 = y2 + diff - diff // 2
+
+        # 边界调整
+        if new_y1 < 0:
+            new_y2 += -new_y1
+            new_y1 = 0
+        if new_y2 > origin_h:
+            shift = new_y2 - origin_h
+            new_y1 -= shift
+            new_y2 = origin_h
+        # 再次保证不超界
+        new_y1 = max(0, new_y1)
+        new_y2 = min(origin_h, new_y2)
+        new_x1, new_x2 = x1, x2
+
+    else:
+        # 比例一致
+        new_x1, new_y1, new_x2, new_y2 = x1, y1, x2, y2
+
+    # 最终取整
+    return int(round(new_x1)), int(round(new_y1)), int(round(new_x2)), int(round(new_y2))
+
+def get_xyxy(boxes):
+    x1, y1, x2, y2 = float('inf'), float('inf'), float('-inf'), float('-inf')
+    for box in boxes:
+        x1 = min(x1, box[0], box[2])
+        y1 = min(y1, box[1], box[3])
+        x2 = max(x2, box[0], box[2])
+        y2 = max(y2, box[1], box[3])
+    return x1, y1, x2, y2
+
+def crop_img(img, boxes_or_xyxy, origin_wh=None):
+    """
+    crop image to the bounding box or xyxy coordinates, and resize to the original size.
+    Args:
+        img (PIL.Image): The input image to crop.
+        boxes_or_xyxy (list or tuple): The bounding box coordinates in the format
+            [(x1, y1, x2, y2), ...] or (x1, y1, x2, y2).
+        origin_wh (tuple): The original width and height of the image (optional).
+    """
+    if len(boxes_or_xyxy) == 0:
+        return img
+    if isinstance(boxes_or_xyxy[0], list) or isinstance(boxes_or_xyxy[0], tuple):
+        x1, y1, x2, y2 = get_xyxy(boxes_or_xyxy)
+    else:
+        x1, y1, x2, y2 = boxes_or_xyxy
+    if origin_wh is not None:
+        origin_w, origin_h = origin_wh
+    else:
+        origin_w, origin_h = img.size
+
+    new_x1, new_y1, new_x2, new_y2 = adjust_crop_box_to_aspect_strict(
+        x1, y1, x2, y2, origin_w, origin_h
+    )
+
+    crop = img.crop((new_x1, new_y1, new_x2, new_y2))
+    resized = crop.resize((origin_w, origin_h), Image.LANCZOS)
+    return resized
+        
+        

@@ -7,10 +7,7 @@ from task_utils import get_frame
 from pathlib import Path
 from utils import chunk
 
-rate = []
-total, valid = 0, 0
-
-def tensor_to_list(result):
+def tensor_to_dict(result):
     out = {}
     for key in result.keys():
         if isinstance(result[key], torch.Tensor):
@@ -21,104 +18,91 @@ def tensor_to_list(result):
 
 def frame_select(runner, **data):
     pred_obj = detect_data[data["qid"]]["pred"]
-    if "question" in pred_obj:
-        pred_obj = pred_obj["question"] # only use object apear in question
+    # if "question" in pred_obj:
+        # pred_obj = pred_obj["question"] # only use object apear in question
+    pred_obj = list(set([item for item_list in pred_obj.values() for item in item_list]))
+    # pred_obj = pred_obj["question"]
     pred_obj = [obj.lower() for obj in pred_obj]
+    # filter for egoschema subset
+    pred_obj = [obj for obj in pred_obj if obj.lower() != "c"]
     # setup the input image and text prompt for SAM 2 and Grounding DINO
     # VERY important: text queries need to be lowercased + end with a dot
-    text = [f"{obj}." for obj in pred_obj]
+    # text = [f"{obj}." for obj in pred_obj]
+    pred_obj = [obj.lower() for obj in pred_obj]
     
     video_path = Path(runner.dataset.config.video_path).joinpath(data["video_path"])
     images = get_frame(video_path, 1)
     
-    if len(text) == 0:
+    if len(pred_obj) == 0:
         results = {}
     else:
         results = {}
-        inputs = chunk(images, 8)
-        outs = []
-        for chunck_images in inputs:
-            model_inputs = processor(images=chunck_images, text=[" ".join(text) for _ in chunck_images], return_tensors="pt").to(DEVICE)
+        chunk_size = max(32, len(pred_obj)) // len(pred_obj)
+        chunk_images = chunk(images, chunk_size)
+        for i, image in enumerate(chunk_images):
+            image_inputs = [img.copy() for img in image for _ in pred_obj] # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
+            text_inputs = [f"{obj}." for obj in pred_obj] * len(image) # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
+            model_inputs = processor(images=image_inputs, text=text_inputs, return_tensors="pt", padding=True).to(DEVICE)
             with torch.no_grad():
                 outputs = grounding_model(**model_inputs)
-                out = processor.post_process_grounded_object_detection(
+                outputs2 = processor.post_process_grounded_object_detection(
                     outputs,
                     model_inputs.input_ids,
-                    # box_threshold=0.6,
-                    # text_threshold=0.5,
-                    box_threshold=0.4,
-                    text_threshold=0.3,
-                    target_sizes=[image.size[::-1] for image in chunck_images]
+                    box_threshold=box_threshold,
+                    text_threshold=text_threshold,
+                    target_sizes=[img.size[::-1] for img in image_inputs]
                 )
-                outs.extend(out)
-        frame_obj_map = np.zeros((len(outs), len(text)), dtype=bool)
-        for i, result in enumerate(outs):
-            if len(result["labels"]) == 0:
-                continue # no objects detected, skip this image
-            if not skip_object:
-                if len(result["labels"]) == len(pred_obj):
-                    results[i] = tensor_to_list(result)
-                continue
-            # record objects that appear in the image
-            for label in result["labels"]:
-                try:
-                    idx = pred_obj.index(label.lower())
-                except ValueError:
-                    idx = -1
-                    for j, obj in enumerate(pred_obj):
-                        if label.lower() in obj:
-                            idx = j
-                            break
-                if idx == -1:
+            for i, output in enumerate(outputs2):
+                if len(output["scores"]) == 0:
                     continue
-                frame_obj_map[i, idx] = True
-        if skip_object:
-            # skip objects that not apear in all images
-            legal_obj = np.any(frame_obj_map, axis=0)
-            frame_obj_map = frame_obj_map[:, legal_obj]
-            relevant_idx = np.all(frame_obj_map, axis=1)
-            relevant_idx = np.nonzero(relevant_idx)[0].tolist()
-            for i in relevant_idx:
-                results[i] = tensor_to_list(outs[i])
+                frame_idx = i // len(pred_obj)
+                obj_idx = pred_obj[i % len(pred_obj)]
+                if results.get(frame_idx) is None:
+                    results[frame_idx] = {}
+                if results[frame_idx].get(obj_idx) is None:
+                    results[frame_idx][obj_idx] = []
+                results[frame_idx][obj_idx].append(tensor_to_dict(output))
             
-    relevant_idx = list(results.keys())   
-    if len(relevant_idx) == 0:
-        relevant_idx = sorted(list(set(np.linspace(0, len(images)-1, 8).astype(int).tolist())))
-    else:
-        global valid
-        valid += 1
-        rate.append(len(relevant_idx) / len(images))
-        
-    global total
-    total += 1
-    
     return {
         "qid": data["qid"],
-        "relevant_idx": relevant_idx,
-        "last": len(images),
-        "results": results
+        "results": results,
+        "last": len(images)
     }
 
 
 if __name__ == "__main__":
     # exp_name = "0601"
-    exp_name = "0604"
-    
-    skip_object = True # skip objects that not apear in all images
-    # skip_object = False
+    # exp_name = "0607"
+    # exp_name = "0609"
+    # exp_name = "0614"
+    # exp_name = "0619"
+    exp_name = "0621"
     
     # dataset_name = "egoschema_subset"
     dataset_name = "nextmc_test"
     
-    end = "_skip" if skip_object else ""
-    output_path = f"./outputs/{exp_name}/dino_select{end}.jsonl"
+    param_type = "low" # 空缺默认是low
+    # param_type = "high"
+    
+    model_type = "tiny" # 空缺默认是tiny
+    # model_type = "base"
+    
+    output_path = f"./outputs/{exp_name}/dino_out_{dataset_name}_{param_type}_{model_type}.jsonl"
     
     # detect_data = load_data("./outputs/0601/dino_gpt-4.1_nextmc_test.jsonl")
     detect_data = load_data("./outputs/0604/dino_gpt-4.1_nextmc_test_option2.jsonl")
+    # detect_data = load_data("./outputs/0607/dino_gpt-4.1_egoschema_subset_option2.jsonl")
     
-    GROUNDING_MODEL = "D:/models/grounding-dino-tiny"
-    SAM2_CHECKPOINT = "D:/models/sam2.1_hiera_large.pt"
-    SAM2_MODEL_CONFIG = "D:/work/实时对话/VideoTree-e2e2/Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
+    if param_type == "low": 
+        box_threshold=0.4
+        text_threshold=0.3
+    elif param_type == "high":
+        box_threshold=0.6
+        text_threshold=0.5
+    
+    GROUNDING_MODEL = f"D:/models/grounding-dino-{model_type}"
+    # SAM2_CHECKPOINT = "D:/models/sam2.1_hiera_large.pt"
+    # SAM2_MODEL_CONFIG = "D:/work/实时对话/VideoTree-e2e2/Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
     DEVICE = "cuda"
 
     # environment settings
@@ -143,5 +127,3 @@ if __name__ == "__main__":
 
     runner = Runner(frame_select, output_path, iter_key="qid", dataset=dataset_name)
     runner()
-    print(np.mean(rate))
-    print(f"valid: {valid/total}({valid}/{total})")

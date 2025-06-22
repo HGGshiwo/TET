@@ -6,7 +6,7 @@ decord.bridge.set_bridge("torch")
 from utils import chunk
 import torch
 
-vid = "4489511133"
+vid = "3083302557"
 map = json.load(open("D:/datasets/nextqa/map_vid_vidorID.json", "r"))
 _video_path = f"D:/datasets/nextqa/NExTVideo/{map[vid]}.mp4"
 vr = decord.VideoReader(str(_video_path))
@@ -21,4 +21,4 @@ Path(path).mkdir(parents=True, exist_ok=True)
 for idx, frame in enumerate(video):
     # frame = frame.float().mean(dim=0).to(torch.uint8)
     img = Image.fromarray(frame.cpu().numpy())
-    img.save(f"{path}/frame_{idx}.jpg")
+    img.save(f"{path}/frame_{idx}.bmp")

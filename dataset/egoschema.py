@@ -139,7 +139,7 @@ class EgoSchemaDataset(BaseDataset):
     
     def get_compute_metrics2(self):
         results = dict(total_num=0, correct_num=0)
-
+        failed = []
         def compute_metrics(pred, item, compute_result):
             parsed_pred = self.parse_multi_choice_response(pred)
             if parsed_pred is None:
@@ -147,12 +147,14 @@ class EgoSchemaDataset(BaseDataset):
             if parsed_pred == item["truth"]:
                 results["correct_num"] += 1
             else:
-                print(item["qid"])
+                # print(item["qid"])
+                failed.append(item["qid"])
             results["total_num"] += 1
             
             if compute_result:
                 return {
                     "acc": results["correct_num"] / results["total_num"],
+                    "failed": failed,
                 }
 
         return compute_metrics

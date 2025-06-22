@@ -2,6 +2,7 @@ from pathlib import Path
 from runner import AsyncRunner
 import json
 from task_utils import create_model, parse_json
+from utils import load_data
 import asyncio 
 
 
@@ -40,3 +41,14 @@ if __name__ == "__main__":
     output_path = f"./outputs/{exp_name}/filter_{model_name}_{dataset_name}.jsonl"
     runner = AsyncRunner(detect_video, output_path, iter_key="qid", dataset=dataset_name)
     asyncio.run(runner())
+    out_data = load_data(output_path)
+    invalid, bias, total = 0, 0, 0
+    for item in runner.dataset:
+        total += 1
+        if item["qid"] not in out_data:
+            in_valid += 1
+        else:
+            if out_data[item["qid"]]["answer"] == item["truth"]:
+                bias += 1
+    print(f"invalid: {invalid/total:.2f}[{invalid}/{total}]")
+    print(f"bias: {bias/total:.2f}[{bias}/{total}]")

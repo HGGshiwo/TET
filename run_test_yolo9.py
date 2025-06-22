@@ -12,6 +12,7 @@ from task_utils import parse_json, create_model, generate_table, get_frame, make
 from pathlib import Path
 import numpy as np
 from datetime import datetime
+from task_utils import crop_img, make_crop_grid
 
 example = {
     "answer": "A",
@@ -62,9 +63,13 @@ async def frame_select(runner, **data):
             if len(select_data1[data["qid"]]["relevant_idx"]) != 0:
                 valid = select_data1[data["qid"]]["relevant_idx"]
     if uniform_sample:
-        last = select_data1[data["qid"]]["last"]
-        valid = np.linspace(0, last, len(valid)).astype(int).tolist()
-    
+        if select_type == "dino":
+            last = results_data[data["qid"]]["last"]
+        else:
+            last = select_data1[data["qid"]]["last"]
+        valid = np.linspace(0, last-1, len(valid)).astype(int).tolist()
+        valid = list(set(valid))
+        
     image = None
     if input_type == "qa":
         table = generate_table(question_data[qid]["question"], answer_data[qid])
@@ -85,11 +90,19 @@ async def frame_select(runner, **data):
         video_path = runner.dataset.config.video_path
         video_path = Path(video_path).joinpath(data["video_path"])
         frames = get_frame(video_path, 1)
-        frames = [frames[i] for i in valid]
-        image = make_grid(frames, max_frame)
+        if use_crop and (results := results_data[qid]["results"]):
+            boxes = []
+            for i in valid:
+                if str(i) not in results:
+                    continue
+                boxes.append([b for v in results[str(i)].values() for b in v["boxes"]])
+            image = make_crop_grid([frames[i] for i in valid], boxes, max_frame=max_frame)
+        else:
+            frames = [frames[i] for i in valid]
+            image = make_grid(frames, max_frame)
         save_dir = Path(output_path.replace(".jsonl", "_image"))
         save_dir.mkdir(parents=True, exist_ok=True)
-        image.save(str(save_dir.joinpath(f"./outputs/0504/{qid}.jpg")))
+        image.save(str(save_dir.joinpath(f"{qid}.jpg")))
         prompt = PROMPT1 if input_type == "image" else PROMPT1_2
     question = data["question"]
     prompt = prompt.replace("[question]", question)
@@ -120,15 +133,25 @@ if __name__ == "__main__":
     # exp_name = "0515"
     # exp_name = "0522"
     # exp_name = "0601"
-    exp_name = "0603"
+    # exp_name = "0603"
+    # exp_name = "0606" # wo skip
+    # exp_name = "0607"
+    # exp_name = "0609"
+    # exp_name = "0610"
+    # exp_name = "0613"
+    exp_name =  "0621"
     
     # dataset_name = "egoschema_subset"
     dataset_name = "nextmc_test"
     
     uniform_sample = False # 均匀采样，消融实验
+    # uniform_sample = True
+    
     use_difficult = False # 使用困难样本
     use_old_input = False # 使用之前的输入
-    
+    use_crop = True # 是否裁剪图片
+    # use_crop = False # 是否裁剪图片
+        
     # select_type = "tree" # video tree采样
     # select_type = "human" # 人工选择
     # select_type = "wo_capiton" # 大模型选择
@@ -136,6 +159,8 @@ if __name__ == "__main__":
     
     # max_frame = 16
     # max_frame = 8 # 只使用前8帧
+    # max_frame = 24
+    max_frame = 48
     
     input_type = "image" # 使用拼接的图片输入
     # input_type = "qa" # 使用问题和回答输入
@@ -150,7 +175,13 @@ if __name__ == "__main__":
     # model_name = "qwen-vl-max"
     # model_name = "gpt-4o"
     
-    output_path = f"./outputs/{exp_name}/answer3_{select_type}_{input_type}_{model_name}_{max_frame}.jsonl"
+    if use_crop or (select_type == "dino" and uniform_sample):
+        # results_data = load_data("./outputs/0607/dino_out_nextmc_test.jsonl")
+        results_data = load_data("./outputs/0619/dino_out_nextmc_test_low_tiny.jsonl")
+        
+    end = "" if not use_crop else "_crop"
+    end += "" if not uniform_sample else "_uniform"
+    output_path = f"./outputs/{exp_name}/answer3_{select_type}_{input_type}_{model_name}_{max_frame}{end}.jsonl"
     # output_path = "./outputs/0329/nextmc_gpt_4o_tree3_explain.jsonl"
     
     if input_type == "qa":
@@ -173,8 +204,12 @@ if __name__ == "__main__":
     elif select_type == "human":
         select_data2 = load_data("./outputs/0502/relevant.jsonl")
     elif select_type == "dino":
-        select_data2 = load_data("./outputs/0601/dino_select.jsonl")
-        
+        # select_data2 = load_data("./outputs/0601/dino_select.jsonl")
+        # select_data2 = load_data("./outputs/0604/dino_select_skip.jsonl")
+        # select_data2 = load_data("./outputs/0607/dino_select_gpt-4.1_nextmc_test.jsonl")
+        # select_data2 = load_data("./outputs/0607/dino_select_gpt-4.1_egoschema_subset.jsonl")
+        # select_data2 = load_data("./outputs/0620/dino_select_gpt-4.1_nextmc_test.jsonl")
+        select_data2 = load_data("./outputs/0621/dino_select_gpt-4.1_nextmc_test.jsonl")
     if input_type == "analysis" or input_type == "analysis-old":
         answer_data = load_data("./outputs/0512/answer2_gpt-4o-2024-05-13_analysis.jsonl")
     
@@ -209,7 +244,7 @@ if __name__ == "__main__":
         else:
             out = compute_metrics(result[item["qid"]]["answer"], item, True)
     failed = out.pop("failed")
-    failed_path = f"./outputs/{exp_name}/answer3_{select_type}_{input_type}_{model_name}_{max_frame}.txt"
+    failed_path = output_path.replace(".jsonl", ".txt")
     Path(failed_path).write_text("\n".join(failed))
     print(out)
     if use_difficult:

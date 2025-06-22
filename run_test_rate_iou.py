@@ -33,7 +33,6 @@ def calculate_acc(list1, list2):
 def frame_select(runner, **data):
     if data["qid"] not in select_data2:
         return True
-    truth = select_data3[data["qid"]]["answer"]
     if "relevance" in select_data2[data["qid"]]:
         pred = []
         for relevant, idx in zip(select_data2[data["qid"]]["relevance"], select_data2[data["qid"]]["tree_node"]):
@@ -43,19 +42,22 @@ def frame_select(runner, **data):
         pred = select_data2[data["qid"]]["answer"]
     elif "relevant_idx" in select_data2[data["qid"]]:
         pred = select_data2[data["qid"]]["relevant_idx"]
-    uniform = np.linspace(0, select_data[data["qid"]]["last"], len(pred)).astype(int)
-    uniform = list(set(uniform))
-    iou_rate.append(calculate_iou(pred, truth))
-    acc_rate.append(calculate_acc(pred, truth))
-    uni_iou_rate.append(calculate_iou(uniform, truth))
-    uni_acc_rate.append(calculate_acc(uniform, truth))
+
+    if data["qid"] in select_data3:
+        uniform = np.linspace(0, select_data[data["qid"]]["last"], len(pred)).astype(int)
+        uniform = list(set(uniform))
+        truth = select_data3[data["qid"]]["answer"]
+        iou_rate.append(calculate_iou(pred, truth))
+        acc_rate.append(calculate_acc(pred, truth))
+        uni_iou_rate.append(calculate_iou(uniform, truth))
+        uni_acc_rate.append(calculate_acc(uniform, truth))
     frame_num.append(len(pred))
     return True
 
 
 if __name__ == "__main__":
     # select_data2 = load_data("./outputs/0413/select2.jsonl") # 模型选
-    select_data2 = load_data("./outputs/0329/nextmc_gpt_4o_tree1.jsonl") # video tree 选
+    # select_data2 = load_data("./outputs/0329/nextmc_gpt_4o_tree1.jsonl") # video tree 选
     # select_data2 = load_data("./outputs/0508/clip.jsonl") # clip 选
     # select_data2 = load_data("./outputs/0413/select.jsonl") # yolo 选
     # select_data2 = load_data("./outputs/0524/clip_clip2_lvnet.jsonl") # clip2 选
@@ -67,6 +69,7 @@ if __name__ == "__main__":
     # select_data2 = load_data("./outputs/0531/clip_blip_top1_limit.jsonl")  # blip top1 yolo 选
     # select_data2 = load_data("./outputs/0531/clip_blip_top1.jsonl")  # blip top1 yolo 选
     # select_data2 = load_data("./outputs/0601/dino_select.jsonl")  # dino select
+    select_data2 = load_data("./outputs/0604/dino_select_skip.jsonl")
     
     select_data3 = load_data("./outputs/0502/relevant.jsonl")
     select_data = load_data("./outputs/0413/select.jsonl")
