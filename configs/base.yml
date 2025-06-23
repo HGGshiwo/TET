@@ -1,0 +1,13 @@
+dataset_name: egoschema_subset
+# obj
+option_type: option2
+model_name: gpt-4.1-2025-04-14
+# dino
+box_threshold: 0.4
+text_threshold: 0.3
+grounding_model: D:/models/grounding-dino-base
+# answer
+uniform_sample: false
+use_difficult: false
+use_crop: true
+max_frame: 48

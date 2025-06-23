@@ -5,7 +5,8 @@ import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from task_utils import get_frame
 from pathlib import Path
-from utils import chunk
+from utils import chunk, load_data
+
 
 def tensor_to_dict(result):
     out = {}
@@ -16,11 +17,14 @@ def tensor_to_dict(result):
             out[key] = result[key]
     return out
 
+
 def frame_select(runner, **data):
     pred_obj = detect_data[data["qid"]]["pred"]
     # if "question" in pred_obj:
-        # pred_obj = pred_obj["question"] # only use object apear in question
-    pred_obj = list(set([item for item_list in pred_obj.values() for item in item_list]))
+    # pred_obj = pred_obj["question"] # only use object apear in question
+    pred_obj = list(
+        set([item for item_list in pred_obj.values() for item in item_list])
+    )
     # pred_obj = pred_obj["question"]
     pred_obj = [obj.lower() for obj in pred_obj]
     # filter for egoschema subset
@@ -29,10 +33,10 @@ def frame_select(runner, **data):
     # VERY important: text queries need to be lowercased + end with a dot
     # text = [f"{obj}." for obj in pred_obj]
     pred_obj = [obj.lower() for obj in pred_obj]
-    
+
     video_path = Path(runner.dataset.config.video_path).joinpath(data["video_path"])
     images = get_frame(video_path, 1)
-    
+
     if len(pred_obj) == 0:
         results = {}
     else:
@@ -40,9 +44,15 @@ def frame_select(runner, **data):
         chunk_size = max(32, len(pred_obj)) // len(pred_obj)
         chunk_images = chunk(images, chunk_size)
         for i, image in enumerate(chunk_images):
-            image_inputs = [img.copy() for img in image for _ in pred_obj] # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
-            text_inputs = [f"{obj}." for obj in pred_obj] * len(image) # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
-            model_inputs = processor(images=image_inputs, text=text_inputs, return_tensors="pt", padding=True).to(DEVICE)
+            image_inputs = [
+                img.copy() for img in image for _ in pred_obj
+            ]  # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
+            text_inputs = [f"{obj}." for obj in pred_obj] * len(
+                image
+            )  # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
+            model_inputs = processor(
+                images=image_inputs, text=text_inputs, return_tensors="pt", padding=True
+            ).to(DEVICE)
             with torch.no_grad():
                 outputs = grounding_model(**model_inputs)
                 outputs2 = processor.post_process_grounded_object_detection(
@@ -50,7 +60,7 @@ def frame_select(runner, **data):
                     model_inputs.input_ids,
                     box_threshold=box_threshold,
                     text_threshold=text_threshold,
-                    target_sizes=[img.size[::-1] for img in image_inputs]
+                    target_sizes=[img.size[::-1] for img in image_inputs],
                 )
             for i, output in enumerate(outputs2):
                 if len(output["scores"]) == 0:
