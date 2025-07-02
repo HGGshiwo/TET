@@ -173,7 +173,8 @@ class NextMCDataset(NextQADataset):
         return compute_metrics
 
     def get_compute_metrics2(self):
-        results = dict(total_num=0, correct_num=0)
+        total = {"D": 0, "C": 0, "T": 0} 
+        correct = {"D": 0, "C": 0, "T": 0}
         failed_list = []
         def compute_metrics(pred, item, compute_result):
             doc = {f"a{j}": item[f"cm_a{j}"] for j in range(5)}
@@ -184,14 +185,17 @@ class NextMCDataset(NextQADataset):
             if parsed_pred is None:
                 print(f"{item['qid']} is None")
             if parsed_pred == item["truth"]:
-                results["correct_num"] += 1
+                correct[f"{item['q_type'][0]}"] += 1
             else:
                 failed_list.append(item["qid"])
-            results["total_num"] += 1
+            total[f"{item['q_type'][0]}"] += 1
             
             if compute_result:
                 return {
-                    "acc": results["correct_num"] / results["total_num"],
+                    "Avg": sum(correct.values()) / sum(total.values()),
+                    "Des": correct["D"] / total["D"] if total["D"] > 0 else 0,
+                    "Cau": correct["C"] / total["C"] if total["C"] > 0 else 0,
+                    "Tem": correct["T"] / total["T"] if total["T"] > 0 else 0,
                     "failed": failed_list,
                 }
 

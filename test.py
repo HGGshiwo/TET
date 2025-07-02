@@ -6,7 +6,7 @@ decord.bridge.set_bridge("torch")
 from utils import chunk
 import torch
 
-vid = "4188739935"
+vid = "10305881544"
 map = json.load(open("D:/datasets/nextqa/map_vid_vidorID.json", "r"))
 _video_path = f"D:/datasets/nextqa/NExTVideo/{map[vid]}.mp4"
 vr = decord.VideoReader(str(_video_path))

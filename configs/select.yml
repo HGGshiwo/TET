@@ -1,0 +1,4 @@
+dino: ./outputs/exp0623_single/dino.yml
+model_name: gpt-4.1-2025-04-14
+exp_name: exp0623_tem3
+prompt_version: v3

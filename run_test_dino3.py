@@ -1,36 +1,40 @@
 from runner import AsyncRunner
 import numpy as np
-from utils import load_data
+from utils import load_data, load_data, save_data
 import torch
-from task_utils import parse_json, create_model
+from task_utils import parse_json, create_model, parse_list
 import asyncio
 
-PROMPT = """
+PROMPT_v1 = """
 Below is a question related to a video, followed by an object existence table. Each row of the table represents a video segment, with the numbers at the front indicating the start and end frame numbers of that segment. If the segment contains only one frame, the number represents that single frame. The following strings indicate the list of objects present in that segment. Based on the question and the object existence table, please analyze which segments (frame numbers) are relevant to the question. Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question. You may use a single number for an individual frame, or a string in the format "start-end" to represent a range of consecutive frames; in the actual output, replace "start" and "end" with the actual start and end frame numbers. Below is the question: [question]. Below is the object existence table: [table]. Please provide your answer.
+"""
+# 增加对start, middle, end的解释
+PROMPT_v2 = """
+Below is a question related to a video, followed by an object existence table. Each row of the table represents a video segment, with the numbers at the front indicating the start and end frame numbers of that segment. If the segment contains only one frame, the number represents that single frame. The following strings indicate the list of objects present in that segment. Based on the question and the object existence table, please analyze which segments (frame numbers) are relevant to the question. If the problem includes descriptions like "start," "middle," or "end" referring to the position in the video, it refers to the first 30%, the middle 30%, and the last 30% of the video, respectively. Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question. You may use a single number for an individual frame, or a string in the format "start-end" to represent a range of consecutive frames; in the actual output, replace "start" and "end" with the actual start and end frame numbers. Below is the question: [question]. Below is the object existence table: [table]. Please provide your answer.
+"""
+
+PROMPT_v3 = """
+Below is a question related to a video, followed by an object existence table. Each row of the table represents a video segment, with the numbers at the front indicating the start and end frame numbers of that segment. If the segment contains only one frame, the number represents that single frame. The following strings indicate the list of objects present in that segment. Based on the question and the object existence table, please analyze which segments (frame numbers) are relevant to the question. Here are the things you need to pay attention to:
+1. If the problem includes descriptions like "start," "middle," or "end" referring to the position in the video, it refers to the first 30%, the middle 30%, and the last 30% of the video, respectively. 
+2. The existence table is constructed by the object detection model and might not be completely accurate. For example, if the same object appears in both the previous and next frames, but is missing in the middle frame, it could be due to a missed detection.
+3. You only need to exclude frames that are clearly irrelevant to the problem, and make sure not to miss any frames that might be related. Don't worry about retaining too many frames, as further filtering will be performed in subsequent steps.
+Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question. You may use a single number for an individual frame, or a string in the format "start-end" to represent a range of consecutive frames; in the actual output, replace "start" and "end" with the actual start and end frame numbers. Below is the question: [question]. Below is the object existence table: [table]. Please provide your answer.
 """
 
 
-def parse_list(list_data):
-    out = set()
-    for d in list_data:
-        if isinstance(d, str):
-            if "-" in d:
-                start, end = map(int, d.split("-"))
-                out.update(list(range(start, end + 1)))
-            else:
-                out.add(int(d))
-        else:
-            assert isinstance(d, int), f"Invalid type in list_data: {d}"
-            out.add(d)
-    return sorted(list(out))
-
-
 def make_exist_table(pred_obj, results):
-    frame_obj_map = np.zeros((len(results), len(pred_obj)), dtype=bool)
+    if len(results) == 0:
+        return {}
+    frame_obj_map = np.zeros(
+        (max(map(int, results.keys())) + 1, len(pred_obj)), dtype=bool
+    )
     for i, result in results.items():
         i = int(i)
-        # for label in result["labels"]:
-        for label in result.keys():
+        if single_obj:
+            labels = result.keys()
+        else:
+            labels = result["labels"]
+        for label in labels:
             try:
                 idx = pred_obj.index(label.lower())
             except ValueError:
@@ -69,7 +73,10 @@ def tensor_to_list(result):
 
 
 async def frame_select(runner, **data):
-    pred_obj = detect_data[data["qid"]]["pred"]["question"]
+    if data["qid"] not in detect_data:
+        pred_obj = []
+    else:
+        pred_obj = detect_data[data["qid"]]["pred"]["question"]
     last = input_data[data["qid"]]["last"]
     results = input_data[data["qid"]]["results"]
     relevant_idx = []
@@ -83,7 +90,8 @@ async def frame_select(runner, **data):
         invalid_type = "frame_no_obj"
     else:
         try:
-            prompt = PROMPT.replace("[question]", data["question"].split("A. ")[0])
+            prompt = globals()[f"PROMPT_{prompt_version}"]
+            prompt = prompt.replace("[question]", data["question"].split("A. ")[0])
             table = "\n".join(
                 [
                     f"{key}: {','.join(value)}"
@@ -92,6 +100,7 @@ async def frame_select(runner, **data):
                 ]
             )
             prompt = prompt.replace("[table]", table)
+            prompt = f"NOTE: you should think step by step before give the final answer.\n{prompt}"
             out = await model.forward(prompt)
             parsed = parse_json(out)
             relevant_idx = parse_list(parsed["frame"])
@@ -102,9 +111,7 @@ async def frame_select(runner, **data):
             return None
 
     if len(relevant_idx) == 0:
-        relevant_idx = sorted(
-            list(set(np.linspace(0, last - 1, 8).astype(int).tolist()))
-        )
+        relevant_idx = sorted(set(np.linspace(0, last - 1, 24).astype(int).tolist()))
 
     return {
         "qid": data["qid"],
@@ -116,24 +123,24 @@ async def frame_select(runner, **data):
 
 
 if __name__ == "__main__":
-    # exp_name = "0601"
-    # exp_name = "0607"
-    # exp_name = "0614"
-    exp_name = "0621"
-    
-    model_name = "gpt-4.1"
+    cfg = load_data("./configs/select.yml")
+    dino_cfg = load_data(cfg["dino"])
+    obj_cfg = load_data(dino_cfg["obj"])
+    model_name = cfg["model_name"]
+    dataset_name = obj_cfg["dataset_name"]
+    single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
+    prompt_version = cfg.get("prompt_version", "v1")
+    detect_data = load_data(f"./outputs/{obj_cfg['exp_name']}/obj.jsonl")
+    input_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
 
-    # dataset_name = "egoschema_subset"
-    dataset_name = "nextmc_test"
-
-    detect_data = load_data("./outputs/0604/dino_gpt-4.1_nextmc_test_option2.jsonl")
-    # detect_data = load_data("./outputs/0607/dino_gpt-4.1_egoschema_subset_option2.jsonl")
-    # input_data = load_data("./outputs/0607/dino_out_nextmc_test.jsonl")
-    # input_data = load_data("./outputs/0609/dino_out_egoschema_subset.jsonl")
-    # input_data = load_data(f"./outputs/0619/dino_out_nextmc_test_low_base.jsonl")
-    input_data = load_data(f"./outputs/0619/dino_out_nextmc_test_low_tiny.jsonl")
-    
-    output_path = f"./outputs/{exp_name}/dino_select_{model_name}_{dataset_name}.jsonl"
+    exp_name = cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = dino_cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = obj_cfg["exp_name"]
+    cfg["exp_name"] = exp_name
+    save_data(cfg, f"./outputs/{exp_name}/select.yml")
+    output_path = f"./outputs/{exp_name}/select.jsonl"
 
     model = create_model("api", model_name)
 
@@ -141,7 +148,7 @@ if __name__ == "__main__":
         frame_select, output_path, iter_key="qid", dataset=dataset_name
     )
     asyncio.run(runner())
-    
+
     rate, frame_num = [], []
     total, valid, quest_no_obj, frame_no_obj, model_no_obj = 0, 0, 0, 0, 0
 

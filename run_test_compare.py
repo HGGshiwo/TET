@@ -1,6 +1,14 @@
-file1 = r"D:\work\实时对话\VideoTree-e2e2\outputs\0621\answer3_dino_image_gpt-4.1-2025-04-14_48_crop.txt"
-file2 = r"D:\work\实时对话\VideoTree-e2e2\outputs\0621\answer3_dino_image_gpt-4.1-2025-04-14_48.txt"
+# file1 = r"D:\work\实时对话\VideoTree-e2e2\outputs\0621\answer3_dino_image_gpt-4.1-2025-04-14_48_crop.txt"
+# file2 = r"D:\work\实时对话\VideoTree-e2e2\outputs\0621\answer3_dino_image_gpt-4.1-2025-04-14_48.txt"
 
+# file1 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623_anno\answer.txt"
+# file2 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623\answer.txt"
+
+# file1 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623_single\answer.txt"
+# file2 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623\answer.txt"
+
+file1 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623_select\answer.txt"
+file2 = r"D:\work\实时对话\VideoTree-e2e2\outputs\exp0623_select_wo_crop\answer.txt"
 # 读取文件内容为集合
 def read_file_to_set(filename):
     with open(filename, 'r', encoding='utf-8') as f:

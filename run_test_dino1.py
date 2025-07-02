@@ -4,6 +4,7 @@ import json
 import asyncio
 from task_utils import create_model
 from task_utils import parse_json
+from utils import load_data, save_data
 
 prompt = "Below is a question related to a video. Please analyze the people or objects that will appear in the scene asked about in the question. Only use the information from the question itself, do not add objects based on imagination. If it is not possible to obtain any people or objects from the question, return an empty list. Output a JSON list containing the names of the objects that appear in the question; Here is the question: [question]"
 
@@ -19,6 +20,17 @@ The following is a video-related question along with its options. Please analyze
 Only add objects that meet these criteria to the list. Finally, output a JSON string, with keys 'question', 'A', 'B', 'C', 'D', and 'E', corresponding to the lists of objects mentioned in the question and each option, respectively. If no people or objects can be identified from the given information, return an empty list. The question and options are as follows:[question]
 """
 
+prompt4 = """
+Below is a question related to a video and its options. Please analyze the people or objects mentioned in the question and options. For each extracted entity, please ensure that:
+
+1. The person or object is explicitly mentioned in the text and is not fabricated.
+2. The person or object must be visible in the video frame; invisible entities such as music are not allowed.
+3. Pronouns should be converted to the name of the object, for example, "he" should be changed to "man".
+4. The person or object must have a clear and specific meaning; overly broad terms such as "something" are not allowed.
+5. If the question contains a description of a person, convert it into a concise adjective + noun phrase.
+Only add objects that meet these criteria to the list. Finally, output a JSON string with the keys "question", "A", "B", "C", "D", and "E", corresponding to the list of objects mentioned in the question and each option. If no people or objects can be identified based on the given information, return an empty list. The question and options are as follows: [question]
+"""
+
 async def task(runner, **data):
     try:
         if option_type is None:
@@ -27,14 +39,16 @@ async def task(runner, **data):
         else:
             quesiton = data["question"]
         
-        if option_type == "option1":
-            _prompt = prompt3
-        elif option_type == "option2":
+        if option_type == "option2":
+            # _prompt = prompt3
+            _prompt = prompt4
+        elif option_type == "option1":
             _prompt = prompt2
         else:
             _prompt = prompt
         _prompt = _prompt.replace("[question]", quesiton)
         # _prompt = _prompt.replace("[option]", option)
+        _prompt = f"NOTE: you should think step by step before give the final answer.\n{_prompt}"
         out = await model.forward(_prompt)
         out = parse_json(out)
     except Exception as e:
@@ -46,22 +60,14 @@ async def task(runner, **data):
 
 
 if __name__ == "__main__":
-    # exp_name = "0601"
-    # exp_name = "0604"
-    exp_name = "0607"
+    cfg = load_data("./configs/obj.yml")
+    exp_name = cfg["exp_name"]
+    dataset_name = cfg["dataset_name"]
+    option_type = cfg["option_type"]    
+    model_name = cfg["model_name"]
+    save_data(cfg, f"./outputs/{exp_name}/obj.yml")
     
-    # dataset_name = "nextmc_test"
-    dataset_name = "egoschema_subset"
-    
-    # with_option = False
-    # option_type = None
-    # option_type = "option1"
-    option_type = "option2"
-    
-    model_name = "gpt-4.1"
-    
-    end = f"_{option_type}" if option_type is not None else ""
-    output_path = f"./outputs/{exp_name}/dino_{model_name}_{dataset_name}{end}.jsonl"
+    output_path = f"./outputs/{exp_name}/obj.jsonl"
     model = create_model('api', model_name)
     runner = AsyncRunner(task, output_path, iter_key="qid", dataset=dataset_name)
     asyncio.run(runner())

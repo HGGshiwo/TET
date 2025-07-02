@@ -1,7 +1,7 @@
 import decord
 # from model.builder import build_model
 import supervision as sv
-
+from PIL import Image, ImageDraw
 decord.bridge.set_bridge("torch")
 import torch
 from openai import OpenAI, AsyncOpenAI
@@ -30,6 +30,7 @@ from transformers import AutoProcessor, Blip2ForImageTextRetrieval, AddedToken
 # from lavis.processors import load_processor
 import cv2
 import math
+from PIL import Image, ImageDraw, ImageFont
 
 class LLavaModel:
     def __init__(self, pretrained_path):
@@ -289,6 +290,19 @@ def parse_json(pred, list=False):
             return None
     return pred
 
+def parse_list(list_data):
+    out = set()
+    for d in list_data:
+        if isinstance(d, str):
+            if "-" in d:
+                start, end = map(int, d.split("-"))
+                out.update(list(range(start, end + 1)))
+            else:
+                out.add(int(d))
+        else:
+            assert isinstance(d, int), f"Invalid type in list_data: {d}"
+            out.add(d)
+    return sorted(list(out))
 
 def load_jsonl2dict(path):
     list_data = jsonlines.open(path, "r")
@@ -360,59 +374,59 @@ def generate_table(row_names, data_dict, filter=True):
 
     return markdown_table
 
+image_split = {
+    1: [1, 1],
+    2: [1, 2],
+    3: [1, 3],
+    4: [2, 2],
+    5: [2, 3],
+    6: [2, 3],
+    7: [2, 4],
+    8: [2, 4],
+    9: [3, 3],
+    10: [3, 4],
+    11: [3, 4],
+    12: [3, 4],
+    13: [4, 4],
+    14: [4, 4],
+    15: [4, 4],
+    16: [4, 4],
+    17: [4, 5],
+    18: [4, 5],
+    19: [4, 5],
+    20: [4, 5],
+    21: [5, 5],
+    22: [5, 5],
+    23: [5, 5],
+    24: [5, 5],
+    25: [5, 5],
+    26: [5, 6],
+    27: [5, 6],
+    28: [5, 6],
+    29: [5, 6],
+    30: [5, 6],
+    31: [5, 7],
+    32: [5, 7],
+    33: [5, 7],
+    34: [5, 7],
+    35: [5, 7],
+    36: [6, 6],
+    37: [5, 8],
+    38: [5, 8],
+    39: [5, 8],
+    40: [5, 8],
+    41: [6, 7],
+    42: [6, 7],
+    43: [5, 9],
+    44: [5, 9],
+    45: [5, 9],
+    46: [6, 8],
+    47: [6, 8],
+    48: [6, 8],
+    49: [7, 7],
+}
 
-def make_grid(image_list, max_frame=8, pad_width = 10):
-    image_split = {
-        1: [1, 1],
-        2: [1, 2],
-        3: [1, 3],
-        4: [2, 2],
-        5: [2, 3],
-        6: [2, 3],
-        7: [2, 4],
-        8: [2, 4],
-        9: [3, 3],
-        10: [3, 4],
-        11: [3, 4],
-        12: [3, 4],
-        13: [4, 4],
-        14: [4, 4],
-        15: [4, 4],
-        16: [4, 4],
-        17: [4, 5],
-        18: [4, 5],
-        19: [4, 5],
-        20: [4, 5],
-        21: [5, 5],
-        22: [5, 5],
-        23: [5, 5],
-        24: [5, 5],
-        25: [5, 5],
-        26: [5, 6],
-        27: [5, 6],
-        28: [5, 6],
-        29: [5, 6],
-        30: [5, 6],
-        31: [5, 7],
-        32: [5, 7],
-        33: [5, 7],
-        34: [5, 7],
-        35: [5, 7],
-        36: [6, 6],
-        37: [5, 8],
-        38: [5, 8],
-        39: [5, 8],
-        40: [5, 8],
-        41: [6, 7],
-        42: [6, 7],
-        43: [5, 9],
-        44: [5, 9],
-        45: [5, 9],
-        46: [6, 8],
-        47: [6, 8],
-        48: [6, 8],
-        49: [7, 7],
-    }
+def make_grid(image_list, max_frame=8, pad_width=10):
     assert max_frame <= 49, "max_frame should be less than 49"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
@@ -429,58 +443,32 @@ def make_grid(image_list, max_frame=8, pad_width = 10):
     out = Image.fromarray(out)
     return out
 
-def make_crop_grid(image_list, boxes, max_frame=8, pad_width = 10):
-    image_split = {
-        1: [1, 1],
-        2: [1, 2],
-        3: [1, 3],
-        4: [2, 2],
-        5: [2, 3],
-        6: [2, 3],
-        7: [2, 4],
-        8: [2, 4],
-        9: [3, 3],
-        10: [3, 4],
-        11: [3, 4],
-        12: [3, 4],
-        13: [4, 4],
-        14: [4, 4],
-        15: [4, 4],
-        16: [4, 4],
-        17: [4, 5],
-        18: [4, 5],
-        19: [4, 5],
-        20: [4, 5],
-        21: [5, 5],
-        22: [5, 5],
-        23: [5, 5],
-        24: [5, 5],
-        25: [5, 5],
-        26: [5, 6],
-        27: [5, 6],
-        28: [5, 6],
-        29: [5, 6],
-        30: [5, 6],
-        31: [5, 7],
-        32: [5, 7],
-        33: [5, 7],
-        34: [5, 7],
-        35: [5, 7],
-        36: [6, 6],
-        37: [5, 8],
-        38: [5, 8],
-        39: [5, 8],
-        40: [5, 8],
-        41: [6, 7],
-        42: [6, 7],
-        43: [5, 9],
-        44: [5, 9],
-        45: [5, 9],
-        46: [6, 8],
-        47: [6, 8],
-        48: [6, 8],
-        49: [7, 7],
-    }
+def make_anno_grid(image_list, boxes, max_frame=8, pad_width=10):
+    frame_limit = max(list(image_split.keys()))
+    assert max_frame <= frame_limit, f"max_frame should be less than {frame_limit}"
+    if len(image_list) > max_frame:
+        idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
+        idx = list(set(idx))
+        image_list = [image_list[i] for i in idx]
+        boxes = [boxes[i] for i in idx]
+    row_num, col_num = image_split[len(image_list)]
+    origin_w, origin_h = image_list[0].size
+    total_w = int(origin_w * col_num + pad_width * (col_num - 1))
+    total_h = int(origin_h * row_num + pad_width * (row_num - 1))
+    out = Image.new("RGB", (total_w, total_h), (0, 0, 0))
+    for i, (img, box) in enumerate(zip(image_list, boxes)):
+        crop = img.copy()
+        draw = ImageDraw.Draw(crop)
+        for b in box:
+            draw.rectangle(b, outline="red", width=2)
+        row_idx = i // col_num
+        col_idx = i % col_num
+        x1 = col_idx * (origin_w + pad_width) + pad_width
+        y1 = row_idx * (origin_h + pad_width) + pad_width
+        out.paste(crop, (x1, y1))
+    return out
+
+def make_crop_grid(image_list, boxes, max_frame=8, pad_width=10):
     frame_limit = max(list(image_split.keys()))
     assert max_frame <= frame_limit, f"max_frame should be less than {frame_limit}"
     if len(image_list) > max_frame:
@@ -607,5 +595,30 @@ def crop_img(img, boxes_or_xyxy, origin_wh=None):
     crop = img.crop((new_x1, new_y1, new_x2, new_y2))
     resized = crop.resize((origin_w, origin_h), Image.LANCZOS)
     return resized
-        
-        
+
+def annote_frame_idx(image, frame_idx):
+    """
+    在PIL图片左上角标注帧的序号
+
+    :param image: PIL.Image.Image对象
+    :param frame_idx: 当前帧序号（从1开始）
+    :return: 标注后的PIL图片
+    """
+    # 复制图片，避免修改原图
+    img = image.copy()
+    draw = ImageDraw.Draw(img)
+    text = f'Frame {frame_idx}'
+    font = ImageFont.truetype('arial.ttf', 40)  # 字体大小为20
+    # 计算文本大小
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    # 位置
+    x, y = 10, 10
+    # 画底色矩形（可选，增强可读性）
+    margin = 10
+    # draw.rectangle([x - margin, y - margin, x + text_width + margin, y + text_height + margin], fill=(255, 255, 255, 128))
+    # 画文字
+    draw.text((x, y), text, font=font, fill=(0, 0, 0), stroke_width=2, stroke_fill=(255, 255, 255))
+    return img
+    

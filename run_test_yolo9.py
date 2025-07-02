@@ -1,6 +1,7 @@
-""" 
+"""
 1. 让模型从左到右阅读表格，如果可以直接回答，则忽略剩余的内容
 """
+
 from runner import AsyncRunner
 import decord
 
@@ -8,11 +9,12 @@ decord.bridge.set_bridge("torch")
 import json
 import asyncio
 from utils import load_data
-from task_utils import parse_json, create_model, generate_table, get_frame, make_grid
+from task_utils import parse_json, create_model, generate_table, get_frame, make_grid, annote_frame_idx
 from pathlib import Path
 import numpy as np
 from datetime import datetime
-from task_utils import crop_img, make_crop_grid
+from task_utils import crop_img, make_anno_grid
+from utils import save_data
 
 example = {
     "answer": "A",
@@ -21,6 +23,13 @@ example = {
 }
 
 PROMPT1 = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_anno = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The important areas related to the question in the frame are enclosed by red boxes. You should pay special attention to these parts. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_cont = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Each frame is also shown with an additional image on its right side, which is a zoomed-in and cropped version highlighting a key object extracted from that frame. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_frame_idx = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The upper left corner of each frame indicates the current frame number and the total number of frames is [frame_num]. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
 
 PROMPT1_2 = "Please provide a single-letter answer (A, B, C, D, E) to the following multiple-choice question, and your answer must be one of the letters (A, B, C, D, or E). After selecting your answer, rate your confidence level in this choice on a scale from 1 to 100, where 1 indicates low confidence and 100 signifies high confidence. Please provide a concise one-sentence explanation for your chosen answer. If you are not sure, answer with the most likely answer. You are given a image  composed of several frames stitched together in chronological order, with each frame separated by a black border. The frames are sparsely sampled from the videos. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Here is the question: [question]"
 
@@ -36,6 +45,7 @@ PROMPT_TREE2 = "Please provide a single-letter answer (A, B, C, D, E) to the fol
 
 PROMPT4 = f"Please provide a single-letter answer (A, B, C, D, E) to the following multiple-choice question, and your answer must be one of the letters (A, B, C, D, or E). After selecting your answer, rate your confidence level in this choice on a scale from 1 to 100, where 1 indicates low confidence and 100 signifies high confidence. Please provide a concise one-sentence explanation for your chosen answer. If you are not sure, answer with the most likely answer. Output a json string with following keys: 'answer', 'confidence', 'explain'. You are given some language descriptions of a video. The descriptions are sparsely sampled from the videos. The description consists of several video-related questions and their corresponding answers, starting with the question and then the corresponding answer. Each answer is preceded by a corresponding frame number.\nHere are the descriptions:[description]\nHere is the question: [question], Output example: {json.dumps(example)}"
 
+
 def frame_filter(data):
     if use_difficult:
         data = difficult_data[data["qid"]]
@@ -43,6 +53,7 @@ def frame_filter(data):
             return True
         return False
     return True
+
 
 async def frame_select(runner, **data):
     qid = data["qid"]
@@ -52,7 +63,14 @@ async def frame_select(runner, **data):
     elif select_type == "human":
         valid = select_data2[data["qid"]]["answer"]
     elif select_type == "dino":
-        valid = select_data2[data["qid"]]["relevant_idx"]
+        if data["qid"] not in select_data2:
+            last = results_data[data["qid"]]["last"]
+            valid = np.linspace(0, last - 1, max_frame).astype(int).tolist()
+            valid = list(set(valid))
+        else:
+            valid = select_data2[data["qid"]]["relevant_idx"]
+            valid = [v for v in valid if v < results_data[data["qid"]]["last"] and v >= 0]
+
     elif select_type == "wo_capiton":
         # valid = [key for key in answer_data[qid].keys() if key % 2 == 0]
         valid = list(range(0, select_data1[data["qid"]]["last"], 2))
@@ -62,14 +80,16 @@ async def frame_select(runner, **data):
         elif data["qid"] in select_data1:
             if len(select_data1[data["qid"]]["relevant_idx"]) != 0:
                 valid = select_data1[data["qid"]]["relevant_idx"]
-    if uniform_sample:
+    if uniform_sample or add_frame_idx:
         if select_type == "dino":
             last = results_data[data["qid"]]["last"]
         else:
             last = select_data1[data["qid"]]["last"]
-        valid = np.linspace(0, last-1, len(valid)).astype(int).tolist()
+    if uniform_sample:
+        frame_num = len(valid) if not uniform_all else min(max_frame, last)
+        valid = np.linspace(0, last - 1, frame_num).astype(int).tolist()
         valid = list(set(valid))
-        
+
     image = None
     if input_type == "qa":
         table = generate_table(question_data[qid]["question"], answer_data[qid])
@@ -90,28 +110,67 @@ async def frame_select(runner, **data):
         video_path = runner.dataset.config.video_path
         video_path = Path(video_path).joinpath(data["video_path"])
         frames = get_frame(video_path, 1)
-        if use_crop and (results := results_data[qid]["results"]):
+        if (use_crop or use_anno or use_cont) and (
+            results := results_data[qid]["results"]
+        ):
             boxes = []
             for i in valid:
                 if str(i) not in results:
+                    boxes.append([])
                     continue
-                boxes.append([b for v in results[str(i)].values() for b in v["boxes"]])
-            image = make_crop_grid([frames[i] for i in valid], boxes, max_frame=max_frame)
+                if single_obj:
+                    boxes.append(
+                        [b for v in results[str(i)].values() for b in v["boxes"]]
+                    )
+                else:
+                    boxes.append(results[str(i)]["boxes"])
+            if use_crop:
+                # image = make_crop_grid([frames[i] for i in valid], boxes, max_frame=max_frame)
+                image = make_grid(
+                    [crop_img(frames[v], boxes[i]) for i, v in enumerate(valid)],
+                    max_frame=max_frame,
+                )
+            elif use_anno:
+                image = make_anno_grid(
+                    [frames[i] for i in valid], boxes, max_frame=max_frame
+                )
+            elif use_cont:
+                image = []
+                for i, (v, b) in enumerate(zip(valid, boxes)):
+                    if i % 2 == 0:
+                        image.append(frames[v])
+                    else:
+                        image.append(crop_img(frames[v], b))
+                image = make_grid(image, max_frame=max_frame)
+        elif add_frame_idx:
+            image = make_grid([annote_frame_idx(frames[i], i) for i in valid])
         else:
             frames = [frames[i] for i in valid]
             image = make_grid(frames, max_frame)
         save_dir = Path(output_path.replace(".jsonl", "_image"))
         save_dir.mkdir(parents=True, exist_ok=True)
         image.save(str(save_dir.joinpath(f"{qid}.jpg")))
-        prompt = PROMPT1 if input_type == "image" else PROMPT1_2
+        if input_type == "image":
+            if use_anno:
+                prompt = PROMPT1_anno
+            elif use_cont:
+                prompt = PROMPT1_cont
+            elif add_frame_idx:
+                prompt = PROMPT1_frame_idx.replace("[frame_num]", str(last))
+            else:
+                prompt = PROMPT1
+        else:
+            prompt = PROMPT1_2
     question = data["question"]
     prompt = prompt.replace("[question]", question)
-    
+    if use_cot:
+        prompt = f"NOTE: you should think step by step before give the final answer.\n{prompt}"
     try:
         if use_old_input:
-            prompt = input_data[qid]["prompt"]    
+            prompt = input_data[qid]["prompt"]
         out = await model.forward(prompt, image)
         assert out is not None, "model output is None"
+        out_raw = out
         if use_old_input or input_type.endswith("-old"):
             out = {"answer": out}
         else:
@@ -123,6 +182,7 @@ async def frame_select(runner, **data):
             out["qid"] = qid
             out["prompt"] = prompt
             out["truth"] = data["truth"]
+            out["raw"] = out_raw
     except Exception as e:
         print(e)
         out = None
@@ -130,72 +190,66 @@ async def frame_select(runner, **data):
 
 
 if __name__ == "__main__":
-    # exp_name = "0515"
-    # exp_name = "0522"
-    # exp_name = "0601"
-    # exp_name = "0603"
-    # exp_name = "0606" # wo skip
-    # exp_name = "0607"
-    # exp_name = "0609"
-    # exp_name = "0610"
-    # exp_name = "0613"
-    exp_name =  "0621"
-    
-    # dataset_name = "egoschema_subset"
-    dataset_name = "nextmc_test"
-    
-    uniform_sample = False # 均匀采样，消融实验
-    # uniform_sample = True
-    
-    use_difficult = False # 使用困难样本
-    use_old_input = False # 使用之前的输入
-    use_crop = True # 是否裁剪图片
-    # use_crop = False # 是否裁剪图片
-        
-    # select_type = "tree" # video tree采样
-    # select_type = "human" # 人工选择
-    # select_type = "wo_capiton" # 大模型选择
+    use_old_input = False  # 使用之前的输入
     select_type = "dino"
+    input_type = "image"
+
+    cfg = load_data("./configs/answer.yml")
+    select2_cfg = load_data(cfg["select2"])
+    select_cfg = load_data(select2_cfg["select"])
+    dino_cfg = load_data(select_cfg["dino"])
+    obj_cfg = load_data(dino_cfg["obj"])
+
+    single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
+    dataset_name = obj_cfg["dataset_name"]
+    uniform_sample = cfg["uniform_sample"]  # 是否均匀采样
+    if uniform_sample:
+        uniform_all = cfg["uniform_all"]  # 是否均匀采样所有数据
     
-    # max_frame = 16
-    # max_frame = 8 # 只使用前8帧
-    # max_frame = 24
-    max_frame = 48
-    
-    input_type = "image" # 使用拼接的图片输入
-    # input_type = "qa" # 使用问题和回答输入
-    # input_type = "analysis" # 使用分析表格输入
-    # input_type = "analysis-old" # 使用分析表格输入
-    # input_type = "caption" # 使用视频描述输入
-    # input_type = "caption-old" # 使用视频描述输入
-    # input_type = "image-old"
-    
-    # model_name = "gpt-4o-2024-05-13"
-    model_name = 'gpt-4.1-2025-04-14'
-    # model_name = "qwen-vl-max"
-    # model_name = "gpt-4o"
-    
-    if use_crop or (select_type == "dino" and uniform_sample):
-        # results_data = load_data("./outputs/0607/dino_out_nextmc_test.jsonl")
-        results_data = load_data("./outputs/0619/dino_out_nextmc_test_low_tiny.jsonl")
-        
-    end = "" if not use_crop else "_crop"
-    end += "" if not uniform_sample else "_uniform"
-    output_path = f"./outputs/{exp_name}/answer3_{select_type}_{input_type}_{model_name}_{max_frame}{end}.jsonl"
-    # output_path = "./outputs/0329/nextmc_gpt_4o_tree3_explain.jsonl"
-    
+    use_difficult = cfg["use_difficult"]  # 是否使用困难样本
+    use_crop = cfg["use_crop"]  # 是否裁剪图片
+    use_anno = cfg["use_anno"]  # 是否使用标注的图片
+    use_cont = cfg["use_cont"]  # 使用拼接
+    use_cot = cfg.get("use_cot", False)  # 是否使用链式推理
+    add_frame_idx = cfg["add_frame_idx"]
+
+    assert not (
+        use_crop and use_anno and use_cont
+    ), "use_crop and use_anno and use_cont cannot be both True"
+
+    max_frame = cfg["max_frame"]
+    model_name = cfg["model_name"]
+
+    if select_type == "dino":
+        results_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
+
+    exp_name = cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = select2_cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = select_cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = dino_cfg.get("exp_name")
+    if exp_name is None:
+        exp_name = obj_cfg["exp_name"]
+    cfg["exp_name"] = exp_name
+
+    output_path = f"./outputs/{exp_name}/answer.jsonl"
+    save_data(cfg, f"./outputs/{exp_name}/answer.yml")
+
     if input_type == "qa":
         question_data = load_data("./outputs/0404/question2.jsonl")
-    
-    # select_data1 = load_data("./outputs/0413/select.jsonl")
-    select_data1 = load_data("./outputs/0522/select.jsonl")
-    
+
+    # select_data1 = load_data("./outputs/0522/select.jsonl")
+
     if use_difficult:
         if dataset_name == "nextmc_test":
             difficult_data = load_data("./outputs/0510/filter.jsonl")
         elif dataset_name == "egoschema_subset":
-            difficult_data = load_data("./outputs/0522/filter_gpt-4o_egoschema_subset.jsonl")
-    
+            difficult_data = load_data(
+                "./outputs/0522/filter_gpt-4o_egoschema_subset.jsonl"
+            )
+
     if select_type == "tree":
         select_data2 = load_data("./outputs/0329/nextmc_gpt_4o_tree2.jsonl")
     elif select_type == "wo_capiton":
@@ -204,28 +258,31 @@ if __name__ == "__main__":
     elif select_type == "human":
         select_data2 = load_data("./outputs/0502/relevant.jsonl")
     elif select_type == "dino":
-        # select_data2 = load_data("./outputs/0601/dino_select.jsonl")
-        # select_data2 = load_data("./outputs/0604/dino_select_skip.jsonl")
-        # select_data2 = load_data("./outputs/0607/dino_select_gpt-4.1_nextmc_test.jsonl")
-        # select_data2 = load_data("./outputs/0607/dino_select_gpt-4.1_egoschema_subset.jsonl")
-        # select_data2 = load_data("./outputs/0620/dino_select_gpt-4.1_nextmc_test.jsonl")
-        select_data2 = load_data("./outputs/0621/dino_select_gpt-4.1_nextmc_test.jsonl")
+        select_data2 = load_data(f"./outputs/{select2_cfg['exp_name']}/select2.jsonl")
     if input_type == "analysis" or input_type == "analysis-old":
-        answer_data = load_data("./outputs/0512/answer2_gpt-4o-2024-05-13_analysis.jsonl")
-    
+        answer_data = load_data(
+            "./outputs/0512/answer2_gpt-4o-2024-05-13_analysis.jsonl"
+        )
+
     if input_type == "caption" or input_type == "caption-old":
         narr_path = "./outputs/0329/nextmc_gpt_4o.jsonl"
         narr_data = load_data(narr_path)
-    
+
     if use_old_input:
         input_data = load_data("./outputs/0329/nextmc_gpt_4o_tree3_explain.jsonl")
         output_path = f"./outputs/{exp_name}/old_input_{model_name}.jsonl"
-        
+
     model = create_model("api", model_name)
-    
-    runner = AsyncRunner(frame_select, output_path, filter=frame_filter, iter_key="qid", dataset=dataset_name)
+
+    runner = AsyncRunner(
+        frame_select,
+        output_path,
+        filter=frame_filter,
+        iter_key="qid",
+        dataset=dataset_name,
+    )
     asyncio.run(runner())
-    
+
     # compute metrics
     result = load_data(output_path)
     compute_metrics = runner.dataset.get_compute_metrics2()
@@ -233,7 +290,10 @@ if __name__ == "__main__":
     for item in runner.dataset:
         total += 1
         if use_difficult:
-            if difficult_data[item["qid"]]["answer"] != difficult_data[item["qid"]]["truth"]:
+            if (
+                difficult_data[item["qid"]]["answer"]
+                != difficult_data[item["qid"]]["truth"]
+            ):
                 difficult += 1
         if item["qid"] not in result:
             continue

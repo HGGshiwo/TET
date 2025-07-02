@@ -5,7 +5,7 @@ import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from task_utils import get_frame
 from pathlib import Path
-from utils import chunk, load_data
+from utils import chunk, load_data, save_data
 
 
 def tensor_to_dict(result):
@@ -19,12 +19,18 @@ def tensor_to_dict(result):
 
 
 def frame_select(runner, **data):
-    pred_obj = detect_data[data["qid"]]["pred"]
-    # if "question" in pred_obj:
-    # pred_obj = pred_obj["question"] # only use object apear in question
-    pred_obj = list(
-        set([item for item_list in pred_obj.values() for item in item_list])
-    )
+    if data["qid"] not in detect_data:
+        pred_obj = []
+    else:
+        pred_obj = detect_data[data["qid"]]["pred"]
+        # if "question" in pred_obj:
+        # pred_obj = pred_obj["question"] # only use object apear in question
+        if question_only:
+            pred_obj = pred_obj["question"]
+        else:
+            pred_obj = list(
+                set([item for item_list in pred_obj.values() for item in item_list])
+            )
     # pred_obj = pred_obj["question"]
     pred_obj = [obj.lower() for obj in pred_obj]
     # filter for egoschema subset
@@ -41,79 +47,73 @@ def frame_select(runner, **data):
         results = {}
     else:
         results = {}
-        chunk_size = max(32, len(pred_obj)) // len(pred_obj)
+        if single_obj:
+            chunk_size = max(32, len(pred_obj)) // len(pred_obj)
+        else:
+            chunk_size = 32
         chunk_images = chunk(images, chunk_size)
+        outs = []
         for i, image in enumerate(chunk_images):
-            image_inputs = [
-                img.copy() for img in image for _ in pred_obj
-            ]  # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
-            text_inputs = [f"{obj}." for obj in pred_obj] * len(
-                image
-            )  # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
+            if single_obj:
+                # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
+                image_inputs = [img.copy() for img in image for _ in pred_obj]
+                # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
+                text_inputs = [f"{obj}." for obj in pred_obj] * len(image)
+            else:
+                # image: [1,2,3] -> [1,2,3]
+                image_inputs = [img.copy() for img in image]
+                text_inputs = [" ".join([f"{obj}." for obj in pred_obj]) for _ in image]
             model_inputs = processor(
                 images=image_inputs, text=text_inputs, return_tensors="pt", padding=True
             ).to(DEVICE)
             with torch.no_grad():
                 outputs = grounding_model(**model_inputs)
-                outputs2 = processor.post_process_grounded_object_detection(
+                out = processor.post_process_grounded_object_detection(
                     outputs,
                     model_inputs.input_ids,
                     box_threshold=box_threshold,
                     text_threshold=text_threshold,
                     target_sizes=[img.size[::-1] for img in image_inputs],
                 )
-            for i, output in enumerate(outputs2):
-                if len(output["scores"]) == 0:
-                    continue
-                frame_idx = i // len(pred_obj)
-                obj_idx = pred_obj[i % len(pred_obj)]
+                outs.extend(out)
+        for j, output in enumerate(outs):
+            if len(output["scores"]) == 0:
+                continue
+            if single_obj:
+                frame_idx = j // len(pred_obj)
+                obj_idx = pred_obj[j % len(pred_obj)]
                 if results.get(frame_idx) is None:
                     results[frame_idx] = {}
                 if results[frame_idx].get(obj_idx) is None:
                     results[frame_idx][obj_idx] = []
                 results[frame_idx][obj_idx].append(tensor_to_dict(output))
-            
-    return {
-        "qid": data["qid"],
-        "results": results,
-        "last": len(images)
-    }
+            else:
+                frame_idx = j
+                results[frame_idx] = tensor_to_dict(output)
+                
+    return {"qid": data["qid"], "results": results, "last": len(images)}
 
 
 if __name__ == "__main__":
-    # exp_name = "0601"
-    # exp_name = "0607"
-    # exp_name = "0609"
-    # exp_name = "0614"
-    # exp_name = "0619"
-    exp_name = "0621"
+    cfg = load_data("./configs/dino.yml")
+    question_only = cfg["question_only"]  # 是否只使用问题中的对象
+    box_threshold = cfg["box_threshold"]
+    text_threshold = cfg["text_threshold"]
+    single_obj = cfg["single_obj"]  # 是否只使用单个对象
+    GROUNDING_MODEL = cfg["grounding_model"]
+    exp_name = cfg.get("exp_name", None)
     
-    # dataset_name = "egoschema_subset"
-    dataset_name = "nextmc_test"
+    obj_cfg = load_data(cfg["obj"])
+    dataset_name = obj_cfg["dataset_name"]
+    if exp_name is None:
+        exp_name = obj_cfg["exp_name"]
+        cfg["exp_name"] = exp_name
     
-    param_type = "low" # 空缺默认是low
-    # param_type = "high"
-    
-    model_type = "tiny" # 空缺默认是tiny
-    # model_type = "base"
-    
-    output_path = f"./outputs/{exp_name}/dino_out_{dataset_name}_{param_type}_{model_type}.jsonl"
-    
-    # detect_data = load_data("./outputs/0601/dino_gpt-4.1_nextmc_test.jsonl")
-    detect_data = load_data("./outputs/0604/dino_gpt-4.1_nextmc_test_option2.jsonl")
-    # detect_data = load_data("./outputs/0607/dino_gpt-4.1_egoschema_subset_option2.jsonl")
-    
-    if param_type == "low": 
-        box_threshold=0.4
-        text_threshold=0.3
-    elif param_type == "high":
-        box_threshold=0.6
-        text_threshold=0.5
-    
-    GROUNDING_MODEL = f"D:/models/grounding-dino-{model_type}"
-    # SAM2_CHECKPOINT = "D:/models/sam2.1_hiera_large.pt"
-    # SAM2_MODEL_CONFIG = "D:/work/实时对话/VideoTree-e2e2/Grounded-SAM-2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
-    DEVICE = "cuda"
+    save_data(cfg, f"./outputs/{exp_name}/dino.yml")
+    output_path = f"./outputs/{exp_name}/dino.jsonl"
+    detect_data = load_data(f"./outputs/{obj_cfg['exp_name']}/obj.jsonl")
+
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # environment settings
     # use bfloat16
@@ -133,7 +133,9 @@ if __name__ == "__main__":
     # build grounding dino from huggingface
     model_id = GROUNDING_MODEL
     processor = AutoProcessor.from_pretrained(model_id)
-    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(DEVICE)
+    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(
+        DEVICE
+    )
 
     runner = Runner(frame_select, output_path, iter_key="qid", dataset=dataset_name)
     runner()
