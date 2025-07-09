@@ -1,7 +1,7 @@
-obj: ./outputs/exp0629_nexmc/obj.yml
+obj: ./outputs/exp0629_egoschema/obj.yml
 box_threshold: 0.4
 text_threshold: 0.3
 grounding_model: D:/models/grounding-dino-tiny
 question_only: false  # 是否只使用问题中的对象
 single_obj: true  # 单个物体进行检测
-exp_name: exp0629_nexmc
+exp_name: exp0629_egoschema

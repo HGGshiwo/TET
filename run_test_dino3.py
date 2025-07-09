@@ -155,8 +155,6 @@ if __name__ == "__main__":
     out_data = load_data(output_path)
     for item in runner.dataset:
         results = input_data[item["qid"]]["results"]
-        pred_obj = detect_data[item["qid"]]["pred"]["question"]
-        exist_table = make_exist_table(pred_obj, results)
         total += 1
         if item["qid"] not in out_data:
             print(f"Warning: {item['qid']} not in output data")

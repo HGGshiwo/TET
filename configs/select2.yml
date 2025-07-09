@@ -1,7 +1,7 @@
-select: ./outputs/exp0623_tem3/select.yml
+select: ./outputs/exp0629_egoschema/select.yml
 model_name: gpt-4.1-2025-04-14
 max_frame: 48
-exp_name: exp0623_tem3
+exp_name: exp0629_egoschema
 # use_crop: false
 use_crop: true
 question_only: true
