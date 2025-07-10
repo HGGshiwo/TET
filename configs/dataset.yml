@@ -25,7 +25,7 @@ nextoe:
 
 nextmc:
   frame_fps: 1
-  num_examples_to_run: -1
+  num_examples_to_run: 1000
   stopwords_path: D:/datasets/nextqa/stopwords.csv
   map_path: D:/datasets/nextqa/map_vid_vidorID.json
   frame_path: ./outputs/nextqa_frames

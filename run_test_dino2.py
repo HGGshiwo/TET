@@ -1,9 +1,8 @@
 from runner import Runner
-import numpy as np
 from utils import load_data
 import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-from task_utils import get_frame
+from utils import get_frame
 from pathlib import Path
 from utils import chunk, load_data, save_data
 
@@ -23,21 +22,17 @@ def frame_select(runner, **data):
         pred_obj = []
     else:
         pred_obj = detect_data[data["qid"]]["pred"]
-        # if "question" in pred_obj:
-        # pred_obj = pred_obj["question"] # only use object apear in question
         if question_only:
             pred_obj = pred_obj["question"]
         else:
             pred_obj = list(
                 set([item for item_list in pred_obj.values() for item in item_list])
             )
-    # pred_obj = pred_obj["question"]
+
     pred_obj = [obj.lower() for obj in pred_obj]
-    # filter for egoschema subset
+
     pred_obj = [obj for obj in pred_obj if obj.lower() != "c"]
-    # setup the input image and text prompt for SAM 2 and Grounding DINO
-    # VERY important: text queries need to be lowercased + end with a dot
-    # text = [f"{obj}." for obj in pred_obj]
+
     pred_obj = [obj.lower() for obj in pred_obj]
 
     video_path = Path(runner.dataset.config.video_path).joinpath(data["video_path"])
@@ -90,7 +85,7 @@ def frame_select(runner, **data):
             else:
                 frame_idx = j
                 results[frame_idx] = tensor_to_dict(output)
-                
+
     return {"qid": data["qid"], "results": results, "last": len(images)}
 
 
@@ -102,13 +97,13 @@ if __name__ == "__main__":
     single_obj = cfg["single_obj"]  # 是否只使用单个对象
     GROUNDING_MODEL = cfg["grounding_model"]
     exp_name = cfg.get("exp_name", None)
-    
+
     obj_cfg = load_data(cfg["obj"])
     dataset_name = obj_cfg["dataset_name"]
     if exp_name is None:
         exp_name = obj_cfg["exp_name"]
         cfg["exp_name"] = exp_name
-    
+
     save_data(cfg, f"./outputs/{exp_name}/dino.yml")
     output_path = f"./outputs/{exp_name}/dino.jsonl"
     detect_data = load_data(f"./outputs/{obj_cfg['exp_name']}/obj.jsonl")
@@ -123,12 +118,6 @@ if __name__ == "__main__":
         # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-
-    # build SAM2 image predictor
-    # sam2_checkpoint = SAM2_CHECKPOINT
-    # model_cfg = SAM2_MODEL_CONFIG
-    # sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=DEVICE)
-    # sam2_predictor = SAM2ImagePredictor(sam2_model)
 
     # build grounding dino from huggingface
     model_id = GROUNDING_MODEL

@@ -1,18 +1,11 @@
-"""
-1. 让模型从左到右阅读表格，如果可以直接回答，则忽略剩余的内容
-"""
-
 from runner import AsyncRunner
-import decord
-
-decord.bridge.set_bridge("torch")
 import json
 import asyncio
 from utils import load_data
-from task_utils import create_model, get_frame, make_grid, annote_frame_idx
+from utils import create_model, get_frame, make_grid, annote_frame_idx
 from pathlib import Path
 import numpy as np
-from task_utils import crop_img, parse_json, parse_list
+from utils import crop_img, parse_json, parse_list
 from utils import save_data
 
 example = {

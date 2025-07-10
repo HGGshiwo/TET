@@ -4,11 +4,10 @@
 # select2: ./outputs/exp0629_egoschema/select2.yml
 select2: ./outputs/exp0629_nexmc/select2.yml
 # select2: ./outputs/exp0623_select_wo_crop/select2.yml
-# uniform_sample: true
-uniform_sample: false
-# uniform_all: true
-uniform_all: false
-use_difficult: false
+uniform_sample: true
+# uniform_sample: false
+uniform_target: step2
+
 use_crop: false
 # use_crop: true
 use_anno: false
@@ -20,4 +19,4 @@ max_frame: 48
 model_name: gpt-4.1-2025-04-14
 # model_name: qwen-plus-latest
 use_cot: true
-exp_name: exp0629_nextmc5
+exp_name: exp0709_nextmc_ab1

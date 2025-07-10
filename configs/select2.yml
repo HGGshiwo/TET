@@ -6,4 +6,4 @@ exp_name: exp0629_egoschema
 use_crop: true
 question_only: true
 uniform_sample: false
-uniform_all: false
+uniform_num: step1

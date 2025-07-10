@@ -2,7 +2,7 @@ from runner import AsyncRunner
 import numpy as np
 from utils import load_data, load_data, save_data
 import torch
-from task_utils import parse_json, create_model, parse_list
+from utils import parse_json, create_model, parse_list
 import asyncio
 
 PROMPT_v1 = """
