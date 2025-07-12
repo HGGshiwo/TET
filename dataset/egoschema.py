@@ -3,8 +3,6 @@ from utils import *
 
 OPTIONS = ["A", "B", "C", "D", "E"]
 class EgoSchemaDataset(BaseDataset):
-    # prompt = "Given the video clip and the question below, choose the most appropriate answer from the five options (A, B, C, D, E). The answer should be based on the context and content of the video. Provide your choice as a letter (A, B, C, D, or E) with no extra outputs. \n\nQuestion: [Question] \n\nOptions:\n A. [OptionA]\n B. [OptionB]\n C. [OptionC]\n D. [OptionD]\n E. [OptionE]"
-
     def __init__(self, config, split="subset"):
         super().__init__(config, split)
 
@@ -18,27 +16,13 @@ class EgoSchemaDataset(BaseDataset):
         if self.split == "subset":
             json_data = load_data(self.config.subset_path)
             subset_names_list = list(json_data.keys())
-
+            
         data = []
-        for qid, item in self.anno.items():
+        for item in self.anno:
+            qid = item["q_uid"]
             if self.split == "subset" and qid not in subset_names_list:
                 continue
             question = item["question"]
-            # choices = [
-            #     item["option 0"],
-            #     item["option 1"],
-            #     item["option 2"],
-            #     item["option 3"],
-            #     item["option 4"],
-            # ]
-            # truth = item["truth"] if "truth" in item else -1
-            truth = OPTIONS[item["truth"]]
-            # question = self.prompt.replace("[Question]", question)
-            # question = question.replace("[OptionA]", choices[0])
-            # question = question.replace("[OptionB]", choices[1])
-            # question = question.replace("[OptionC]", choices[2])
-            # question = question.replace("[OptionD]", choices[3])
-            # question = question.replace("[OptionE]", choices[4])
             question = [question.strip()]
             for i in range(5):
                 question.append(f"{OPTIONS[i]}. {item[f'option {i}'].strip()}")
@@ -48,8 +32,9 @@ class EgoSchemaDataset(BaseDataset):
                 "vid": qid,
                 "video_path": qid + ".mp4",
                 "question": question,
-                "truth": truth,
             }
+            if self.split == "subset":
+                new_item["truth"] = OPTIONS[item["truth"]]
             data.append(new_item)
         return data
     

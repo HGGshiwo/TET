@@ -38,14 +38,7 @@ async def frame_select(runner, **data):
     valid = select_data[data["qid"]]["relevant_idx"]
     last = results_data[data["qid"]]["last"]
     if uniform_sample:
-        if uniform_all:
-            valid = (
-                list(range(0, last))
-                if last < max_frame
-                else np.linspace(0, last - 1, max_frame).astype(int).tolist()
-            )
-        else:
-            valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
+        valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
         valid = list(set(valid))
     for i in valid:
         if str(i) not in results:
@@ -105,8 +98,6 @@ if __name__ == "__main__":
     max_frame = cfg["max_frame"]
     use_crop = cfg.get("use_crop", True)
     uniform_sample = cfg.get("uniform_sample", False)
-    if uniform_sample:
-        uniform_all = cfg.get("uniform_all", False)
 
     question_only = cfg.get("question_only", False)
 

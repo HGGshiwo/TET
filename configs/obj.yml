@@ -1,5 +1,6 @@
-exp_name: exp0629_egoschema
-dataset_name: egoschema_subset
+exp_name: exp0711_egoschema_full
+# dataset_name: egoschema_subset
 # dataset_name: nextmc_test
+dataset_name: egoschema_full
 option_type: option2
 model_name: gpt-4.1-2025-04-14

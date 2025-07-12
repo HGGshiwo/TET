@@ -1,10 +1,11 @@
-from runner import Runner
+from runner import MultiGPURunner
 from utils import load_data
 import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from utils import get_frame
 from pathlib import Path
 from utils import chunk, load_data, save_data
+import copy
 
 
 def tensor_to_dict(result):
@@ -17,12 +18,13 @@ def tensor_to_dict(result):
     return out
 
 
-def frame_select(runner, **data):
-    if data["qid"] not in detect_data:
+def frame_select(runner, model, **data):
+    grounding_model = model
+    if data["qid"] not in runner.detect_data:
         pred_obj = []
     else:
-        pred_obj = detect_data[data["qid"]]["pred"]
-        if question_only:
+        pred_obj = runner.detect_data[data["qid"]]["pred"]
+        if runner.question_only:
             pred_obj = pred_obj["question"]
         else:
             pred_obj = list(
@@ -42,39 +44,56 @@ def frame_select(runner, **data):
         results = {}
     else:
         results = {}
-        if single_obj:
-            chunk_size = max(32, len(pred_obj)) // len(pred_obj)
+        batch_size = 8
+        if runner.single_obj:
+            chunk_size = max(batch_size, len(pred_obj)) // len(pred_obj)
         else:
-            chunk_size = 32
+            chunk_size = batch_size
         chunk_images = chunk(images, chunk_size)
         outs = []
+        cur_processor = copy.deepcopy(runner.processor)
         for i, image in enumerate(chunk_images):
-            if single_obj:
-                # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
-                image_inputs = [img.copy() for img in image for _ in pred_obj]
-                # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
-                text_inputs = [f"{obj}." for obj in pred_obj] * len(image)
+            if runner.single_obj:
+                image_inputs = [img.copy() for img in image]
+                text_inputs = [f"{obj}." for obj in pred_obj]
             else:
-                # image: [1,2,3] -> [1,2,3]
                 image_inputs = [img.copy() for img in image]
                 text_inputs = [" ".join([f"{obj}." for obj in pred_obj]) for _ in image]
-            model_inputs = processor(
+            model_inputs = cur_processor(
                 images=image_inputs, text=text_inputs, return_tensors="pt", padding=True
-            ).to(DEVICE)
+            )
+            if runner.single_obj:
+                # image: [1,2,3] -> [1,1,1,2,2,2,3,3,3]
+                for key in ["pixel_values", "pixel_mask"]:
+                    model_inputs[key] = model_inputs[key].repeat_interleave(
+                        len(pred_obj), dim=0
+                    )
+                # text: [1,2,3] -> [1,2,3,1,2,3,1,2,3]
+                for key in ["input_ids", "attention_mask", "token_type_ids"]:
+                    dims = [len(image_inputs)] + [1] * (
+                        len(model_inputs[key].shape) - 1
+                    )
+                    model_inputs[key] = model_inputs[key].repeat(*dims)
+
+            model_inputs.to(grounding_model.device)
             with torch.no_grad():
-                outputs = grounding_model(**model_inputs)
-                out = processor.post_process_grounded_object_detection(
-                    outputs,
-                    model_inputs.input_ids,
-                    box_threshold=box_threshold,
-                    text_threshold=text_threshold,
-                    target_sizes=[img.size[::-1] for img in image_inputs],
-                )
-                outs.extend(out)
+                try:
+                    outputs = grounding_model(**model_inputs)
+                    out = cur_processor.post_process_grounded_object_detection(
+                        outputs,
+                        model_inputs.input_ids,
+                        box_threshold=runner.box_threshold,
+                        text_threshold=runner.text_threshold,
+                        #target_sizes=[img.size[::-1] for img in image_inputs],
+                    )
+                    outs.extend(out)
+                except Exception as e:
+                    print(f"Error processing chunk {i}: {e}")
+                    return None
         for j, output in enumerate(outs):
             if len(output["scores"]) == 0:
                 continue
-            if single_obj:
+            if runner.single_obj:
                 frame_idx = j // len(pred_obj)
                 obj_idx = pred_obj[j % len(pred_obj)]
                 if results.get(frame_idx) is None:
@@ -126,5 +145,13 @@ if __name__ == "__main__":
         DEVICE
     )
 
-    runner = Runner(frame_select, output_path, iter_key="qid", dataset=dataset_name)
-    runner()
+    runner = MultiGPURunner(
+        frame_select, output_path, iter_key="qid", dataset=dataset_name
+    )
+    runner.detect_data = detect_data
+    runner.question_only = question_only
+    runner.single_obj = single_obj
+    runner.processor = processor
+    runner.box_threshold = box_threshold
+    runner.text_threshold = text_threshold
+    runner(model_class=lambda: AutoModelForZeroShotObjectDetection.from_pretrained(model_id), gpu_ids=[0, 1, 2, 3])

@@ -1,9 +1,11 @@
 select: ./outputs/exp0629_egoschema/select.yml
 model_name: gpt-4.1-2025-04-14
 max_frame: 48
-exp_name: exp0629_egoschema
+exp_name: exp0709_egoschema_ab2
 # use_crop: false
 use_crop: true
 question_only: true
-uniform_sample: false
-uniform_num: step1
+
+# unfirom sample frames, with num equals step1 output
+# uniform_sample: false 
+uniform_sample: true

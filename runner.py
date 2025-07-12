@@ -2,6 +2,10 @@ from dataset.builder import build_dataset
 from pathlib import Path
 import decord
 import asyncio
+import multiprocessing as mp
+mp.set_start_method('spawn', force=True) # for linux
+import concurrent.futures
+from queue import Queue
 
 decord.bridge.set_bridge("torch")
 from tqdm import tqdm
@@ -182,6 +186,49 @@ class AsyncRunner(Runner):
         for result in self.compelete_loop():
             result = await result
             self.handle_result(writer, result)
+        print(f"Invalid: {self.invalid}/{len(self.tasks)}")
+        if writer is not None:
+            writer.close()
+
+class MultiGPURunner(Runner):
+    def __call__(self, model_class, gpu_ids=[]):
+        model_map = {}
+        for gpu_id in tqdm(gpu_ids, desc="Loading models"):
+            m = model_class()
+            model_map[gpu_id] = m.to(f"cuda:{gpu_id}")
+        
+        futures_gpu = {}
+        iter_func = self.frame_iter if self.iter_frame else self.data_iter
+        task_queue = Queue()
+        total = 0
+        for data in iter_func():
+            task_queue.put(data)
+            total += 1
+        bar = tqdm(total=total)
+        writer = jsonlines.open(self.output_path, "a") if self.output_path is not None else None    
+        with concurrent.futures.ProcessPoolExecutor(max_workers=len(gpu_ids)) as pool:
+            # 初始化，每个GPU一个任务
+            for gpu_id in gpu_ids:
+                if not task_queue.empty():
+                    task_data = task_queue.get()
+                    future = pool.submit(self.task, self, model=model_map[gpu_id], **task_data)
+                    futures_gpu[future] = gpu_id
+
+            while futures_gpu:
+                # as_completed能实时获得完成 future
+                for future in concurrent.futures.as_completed(list(futures_gpu)):
+                    gpu_id = futures_gpu.pop(future)
+                    result = future.result()
+                    self.handle_result(writer, result)
+                    bar.update(1)
+                    # 分配新任务给空闲的gpu
+                    if not task_queue.empty():
+                        task_data = task_queue.get()
+                        new_future = pool.submit(self.task, self, model=model_map[gpu_id], **task_data)
+                        futures_gpu[new_future] = gpu_id
+                    break  # 只处理一个，之后重新进入 while
+            
+        bar.close()
         print(f"Invalid: {self.invalid}/{len(self.tasks)}")
         if writer is not None:
             writer.close()

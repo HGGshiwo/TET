@@ -32,17 +32,6 @@ class BaseDataset(Dataset):
         self.split = split
         self.anno = self.get_anno()
 
-        self.depth_res = None
-        self.width_res = None
-        self.durations = None
-
-        if config.width_res_path is not None and Path(config.width_res_path).exists():
-            self.width_res = load_data(config.width_res_path)
-        if config.depth_res_path is not None and Path(config.depth_res_path).exists():
-            self.depth_res = load_data(config.depth_res_path)
-        # if config.data_path is not None and Path(config.data_path).exists():
-        #     self.narrations = self.get_descriptions()
-
         data = self.build()
         data = self.filter(data, config.num_examples_to_run)
         self.v2q_map = {}
@@ -51,13 +40,6 @@ class BaseDataset(Dataset):
             if vid not in self.v2q_map:
                 self.v2q_map[vid] = []
             self.v2q_map[vid].append(qid)
-            if self.width_res is not None and qid in self.width_res:
-                item.update(self.width_res[qid])
-            if self.depth_res is not None and qid in self.depth_res:
-                item.update(self.depth_res[qid])
-
-            item["feature_path"] = config.feature_path
-            item["frame_path"] = config.frame_path
 
         self.data = data
 
@@ -92,19 +74,3 @@ class BaseDataset(Dataset):
     
     def get_compute_metrics(self, tokenizer):
         return NotImplementedError
-        result = dict(num_totals=0, num_corrects=0)
-        def compute_metrics(eval_pred: EvalPrediction, return_metrics):
-            inputs = eval_pred.inputs
-            inputs_truth = inputs.pop("truth")
-        
-            for pred, label in zip(eval_pred.predictions, inputs_truth):
-                pred = tokenizer.decode(pred[pred > 0], skip_special_tokens=True)
-                result['num_totals'] += 1
-                if pred == label:
-                    result['num_corrects'] += 1
-            if return_metrics:
-                stat = {
-                    "acc": result['num_corrects'] / result['num_totals'],
-                }
-                return stat
-        return compute_metrics
