@@ -186,15 +186,21 @@ if __name__ == "__main__":
     result = load_data(output_path)
     compute_metrics = runner.dataset.get_compute_metrics2()
     total, difficult = 0, 0
+    answers = {}
+    options = ["A", "B", "C", "D", "E"]
     for item in runner.dataset:
         total += 1
         if item["qid"] not in result:
+            answers[item["qid"]] = 0
             continue
-        if "pred" in result[item["qid"]]:
-            out = compute_metrics(result[item["qid"]]["pred"], item, True)
-        else:
-            out = compute_metrics(result[item["qid"]]["answer"], item, True)
+        answer_key = "pred" if "pred" in result[item["qid"]] else "answer"
+        out = compute_metrics(result[item["qid"]][answer_key], item, True)
+        answers[item["qid"]] = options.index(out[answer_key])
     failed = out.pop("failed")
     failed_path = output_path.replace(".jsonl", ".txt")
     Path(failed_path).write_text("\n".join(failed))
+    name, split = exp_name.split("_") 
+    if name == "egoschema" and "full" in split:
+        answer_path = output_path.replace(".jsonl", ".json")
+        Path(answer_path).write_text(json.dumps(answers, indent=4, ensure_ascii=False))
     print(out)

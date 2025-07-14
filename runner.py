@@ -24,7 +24,9 @@ class Runner:
         dataset_config="./configs/dataset.yml",
         iter_callback=None,
         batch_size=1,
+        max_workers=16
     ):
+        self.max_workers = max_workers
         self.dataset = build_dataset(dataset_config, dataset, is_training=False)
         # output_path = f"./outputs/{exp_name}/nextqa.jsonl"
         self.processed = {}
@@ -168,7 +170,7 @@ class AsyncRunner(Runner):
         return asyncio.as_completed
 
     def create_submit(self, **kwargs):
-        sem = asyncio.Semaphore(200)
+        sem = asyncio.Semaphore(self.max_workers)
 
         async def submit(task, runner, **kwargs):
             async with sem:
@@ -232,7 +234,7 @@ class MultiGPURunner(Runner):
             self.handle_result(writer, result)
             bar.update(1)
         bar.close()
-        print(f"Invalid: {self.invalid}/{len(self.tasks)}")
+        print(f"Invalid: {self.invalid}/{total}")
         if writer is not None:
             writer.close()
 

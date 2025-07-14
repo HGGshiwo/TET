@@ -34,7 +34,7 @@ class EgoSchemaDataset(BaseDataset):
                 "question": question,
             }
             if self.split == "subset":
-                new_item["truth"] = OPTIONS[item["truth"]]
+                new_item["truth"] = OPTIONS[json_data[qid]]
             data.append(new_item)
         return data
     

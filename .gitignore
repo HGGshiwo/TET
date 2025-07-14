@@ -10,3 +10,5 @@ test/
 *.png
 *.pt
 old/
+test.py
+find_correct.py
