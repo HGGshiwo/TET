@@ -31,16 +31,18 @@ PROMPT1_frame_idx = f"This is a question related to the video: [question]. Here 
 
 async def frame_select(runner, **data):
     qid = data["qid"]
-    if data["qid"] not in select_data2:
-        last = results_data[data["qid"]]["last"]
+    video_path = runner.dataset.config.video_path
+    video_path = Path(video_path).joinpath(data["video_path"])
+    frames = get_frame(video_path, 1)
+    last = len(frames)
+    
+    if data["qid"] not in select_data2:    
         valid = np.linspace(0, last - 1, max_frame).astype(int).tolist()
         valid = list(set(valid))
     else:
         valid = select_data2[data["qid"]]["relevant_idx"]
-        valid = [v for v in valid if v < results_data[data["qid"]]["last"] and v >= 0]
+        valid = [v for v in valid if v < last and v >= 0]
 
-    if uniform_sample or add_frame_idx:
-        last = results_data[data["qid"]]["last"]
     if uniform_sample:
         frame_num = len(valid)
         if uniform_target == "both":    
@@ -57,10 +59,9 @@ async def frame_select(runner, **data):
             raise ValueError("uniform_target must be one of 'both', 'step1', 'step2'")
 
     image = None
-    video_path = runner.dataset.config.video_path
-    video_path = Path(video_path).joinpath(data["video_path"])
-    frames = get_frame(video_path, 1)
-    if (use_crop or use_anno or use_cont) and (results := results_data[qid]["results"]):
+    
+    if (use_crop or use_anno or use_cont):
+        results = results_data[qid]["results"] if qid in results_data else {}
         boxes = []
         for i in valid:
             if str(i) not in results:
@@ -118,10 +119,13 @@ async def frame_select(runner, **data):
         else:
             out["qid"] = qid
             out["prompt"] = prompt
-            out["truth"] = data["truth"]
             out["raw"] = out_raw
+            if "truth" in data:
+                out["truth"] = data["truth"]
     except Exception as e:
-        print(e)
+        import traceback
+        print(f"Error processing qid {qid}: {e}")
+        traceback.print_exc()
         out = None
     return out
 
@@ -188,19 +192,26 @@ if __name__ == "__main__":
     total, difficult = 0, 0
     answers = {}
     options = ["A", "B", "C", "D", "E"]
+    name, split = dataset_name.split("_") 
+    is_egoschema_full = name == "egoschema" and "full" in split
     for item in runner.dataset:
         total += 1
-        if item["qid"] not in result:
-            answers[item["qid"]] = 0
-            continue
-        answer_key = "pred" if "pred" in result[item["qid"]] else "answer"
-        out = compute_metrics(result[item["qid"]][answer_key], item, True)
-        answers[item["qid"]] = options.index(out[answer_key])
-    failed = out.pop("failed")
-    failed_path = output_path.replace(".jsonl", ".txt")
-    Path(failed_path).write_text("\n".join(failed))
-    name, split = exp_name.split("_") 
-    if name == "egoschema" and "full" in split:
+        pred = {"answer": "A"} if item["qid"] not in result else result[item["qid"]]
+        answer_key = "pred" if "pred" in pred else "answer"
+        if is_egoschema_full:
+            try:
+                answers[item["qid"]] = options.index(pred[answer_key])
+            except ValueError:
+                print(f"Warning: {item['qid']} has invalid answer {pred[answer_key]}")
+                answers[item["qid"]] = 0
+        else:
+            out = compute_metrics(pred[answer_key], item, True)
+    if not is_egoschema_full:
+        failed = out.pop("failed")
+        failed_path = output_path.replace(".jsonl", ".txt")
+        Path(failed_path).write_text("\n".join(failed))
+        print(out)
+    else:
         answer_path = output_path.replace(".jsonl", ".json")
         Path(answer_path).write_text(json.dumps(answers, indent=4, ensure_ascii=False))
-    print(out)
+    

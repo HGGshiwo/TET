@@ -1,6 +1,6 @@
 egoschema:
   frame_fps: 1
-  num_examples_to_run: -1
+  num_examples_to_run: 150
   video_path: D:/datasets/egoschema/videos
   # anno_path: D:/datasets/LLoVi_caption/egoschema/subset_anno.json 
   anno_path: D:/datasets/egoschema/questions.json

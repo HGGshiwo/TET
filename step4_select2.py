@@ -26,17 +26,17 @@ async def frame_select(runner, **data):
     video_path = runner.dataset.config.video_path
     video_path = Path(video_path).joinpath(data["video_path"])
     frames = get_frame(video_path, 1)
-    results = results_data[qid]
     boxes = []
-    # if data["qid"] not in select_data:
-    #     # last = results_data[data["qid"]]["last"]
-    #     # valid = np.linspace(0, last - 1, max_frame).astype(int).tolist()
-    #     valid = list(set(valid))
-    # else:
-    if data["qid"] not in select_data:
-        return None
-    valid = select_data[data["qid"]]["relevant_idx"]
-    last = results_data[data["qid"]]["last"]
+    if qid not in results_data or data["qid"] not in select_data:
+        print(f"Warning: {qid} not in results or select_data, using {max_frame} frames")
+        valid = np.linspace(0, len(frames) - 1, max_frame).astype(int).tolist()
+        valid = list(set(valid))
+        results = {}
+        last = len(frames) 
+    else:
+        results = results_data[qid]    
+        valid = select_data[data["qid"]]["relevant_idx"]
+        last = results_data[data["qid"]]["last"]
     if uniform_sample:
         valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
         valid = list(set(valid))

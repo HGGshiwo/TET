@@ -73,23 +73,23 @@ def tensor_to_list(result):
 
 
 async def frame_select(runner, **data):
-    if data["qid"] not in detect_data:
-        pred_obj = []
-    else:
-        pred_obj = detect_data[data["qid"]]["pred"]["question"]
-    last = input_data[data["qid"]]["last"]
-    results = input_data[data["qid"]]["results"]
-    relevant_idx = []
-    exist_table = make_exist_table(pred_obj, results)
-    parsed = {}
-    prompt = ""
-    invalid_type = None
-    if len(results) == 0:
-        invalid_type = "quest_no_obj"
-    elif np.all([len(v) == 0 for v in exist_table.values()]):
-        invalid_type = "frame_no_obj"
-    else:
-        try:
+    try:
+        if data["qid"] not in detect_data:
+            pred_obj = []
+        else:
+            pred_obj = detect_data[data["qid"]]["pred"]["question"]
+        last = input_data[data["qid"]]["last"]
+        results = input_data[data["qid"]]["results"]
+        relevant_idx = []
+        exist_table = make_exist_table(pred_obj, results)
+        parsed = {}
+        prompt = ""
+        invalid_type = None
+        if len(results) == 0:
+            invalid_type = "quest_no_obj"
+        elif np.all([len(v) == 0 for v in exist_table.values()]):
+            invalid_type = "frame_no_obj"
+        else:
             prompt = globals()[f"PROMPT_{prompt_version}"]
             prompt = prompt.replace("[question]", data["question"].split("A. ")[0])
             table = "\n".join(
@@ -106,9 +106,9 @@ async def frame_select(runner, **data):
             relevant_idx = parse_list(parsed["frame"])
             if len(relevant_idx) == 0:
                 invalid_type = "model_no_obj"
-        except Exception as e:
-            print(f"{data['qid']} error: {e}")
-            return None
+    except Exception as e:
+        print(f"{data['qid']} error: {e}")
+        return None
 
     if len(relevant_idx) == 0:
         relevant_idx = sorted(set(np.linspace(0, last - 1, 24).astype(int).tolist()))
@@ -154,6 +154,9 @@ if __name__ == "__main__":
 
     out_data = load_data(output_path)
     for item in runner.dataset:
+        if item["qid"] not in input_data:
+            print(f"Warning: {item['qid']} not in input data")
+            continue
         results = input_data[item["qid"]]["results"]
         total += 1
         if item["qid"] not in out_data:

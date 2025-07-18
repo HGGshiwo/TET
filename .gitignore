@@ -12,3 +12,4 @@ test/
 old/
 test.py
 find_correct.py
+validate.py

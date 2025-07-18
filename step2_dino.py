@@ -132,7 +132,7 @@ def frame_select(runner, model, **data):
         return {"qid": data["qid"], "results": results, "last": len(images)}
     except Exception as e:
         import traceback
-        print(f"Error in {data["qid"]}: {e}")
+        print(f"Error in {data['qid']}: {e}")
         traceback.print_exc()
         return None
 
