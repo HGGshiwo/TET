@@ -4,10 +4,9 @@ import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from utils import get_frame
 from pathlib import Path
-from utils import chunk, load_data, save_data
+from utils import chunk, load_data, save_data, print_cfg
 import copy
 from functools import partial
-
 
 def tensor_to_dict(result):
     out = {}
@@ -153,6 +152,7 @@ if __name__ == "__main__":
         cfg["exp_name"] = exp_name
 
     save_data(cfg, f"./outputs/{exp_name}/dino.yml")
+    print_cfg(cfg)
     output_path = f"./outputs/{exp_name}/dino.jsonl"
     detect_data = load_data(f"./outputs/{obj_cfg['exp_name']}/obj.jsonl")
 

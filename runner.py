@@ -4,6 +4,7 @@ import decord
 import asyncio
 import multiprocessing as mp
 mp.set_start_method('spawn', force=True) # for linux
+from utils import redirect_stdout
 
 decord.bridge.set_bridge("torch")
 from tqdm import tqdm
@@ -150,7 +151,8 @@ class Runner:
 
     def compelete_loop(self):
         as_completed = self.create_as_completed()
-        return tqdm(as_completed(self.tasks), total=len(self.tasks))
+        self.bar = tqdm(as_completed(self.tasks), total=len(self.tasks))
+        return self.bar
 
     def __call__(self):
         writer =  jsonlines.open(self.output_path, "a") if self.output_path is not None else None
@@ -158,8 +160,9 @@ class Runner:
             # self.iter_loop(excutor=executor)
         self.iter_loop()
         for result in self.compelete_loop():
-            # result = result.result()
-            self.handle_result(writer, result)
+            with redirect_stdout():
+                # result = result.result()
+                self.handle_result(writer, result)
         print(f"Invalid: {self.invalid}/{len(self.tasks)}")
         if writer is not None:
             writer.close()
@@ -184,7 +187,8 @@ class AsyncRunner(Runner):
         sem = asyncio.Semaphore(200)
         self.iter_loop(sem=sem)
         for result in self.compelete_loop():
-            result = await result
+            with redirect_stdout():
+                result = await result
             self.handle_result(writer, result)
         print(f"Invalid: {self.invalid}/{len(self.tasks)}")
         if writer is not None:
@@ -230,7 +234,8 @@ class MultiGPURunner(Runner):
         bar = tqdm(total=total)
         writer = jsonlines.open(self.output_path, "a") if self.output_path is not None else None
         for _ in range(total):
-            result = self.result_queue.get()
+            with redirect_stdout():
+                result = self.result_queue.get()
             self.handle_result(writer, result)
             bar.update(1)
         bar.close()

@@ -3,7 +3,7 @@ from runner import AsyncRunner
 import asyncio
 from utils import create_model
 from utils import parse_json
-from utils import load_data, save_data
+from utils import load_data, save_data, print_cfg
 
 prompt = "Below is a question related to a video. Please analyze the people or objects that will appear in the scene asked about in the question. Only use the information from the question itself, do not add objects based on imagination. If it is not possible to obtain any people or objects from the question, return an empty list. Output a JSON list containing the names of the objects that appear in the question; Here is the question: [question]"
 
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     option_type = cfg["option_type"]
     model_name = cfg["model_name"]
     save_data(cfg, f"./outputs/{exp_name}/obj.yml")
-
+    print_cfg(cfg)
     output_path = f"./outputs/{exp_name}/obj.jsonl"
     model = create_model("api", model_name)
     runner = AsyncRunner(task, output_path, iter_key="qid", dataset=dataset_name)

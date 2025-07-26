@@ -11,9 +11,8 @@ from utils import (
 )
 from pathlib import Path
 import numpy as np
-from utils import crop_img, make_anno_grid
-from utils import save_data
-
+from utils import crop_img, annote_box
+from utils import save_data, print_cfg
 example = {
     "answer": "A",
     "explain": "put your explaination here",
@@ -38,7 +37,7 @@ async def frame_select(runner, **data):
     
     if data["qid"] not in select_data2:    
         valid = np.linspace(0, last - 1, max_frame).astype(int).tolist()
-        valid = list(set(valid))
+        valid = sorted(set(valid))
     else:
         valid = select_data2[data["qid"]]["relevant_idx"]
         valid = [v for v in valid if v < last and v >= 0]
@@ -47,55 +46,56 @@ async def frame_select(runner, **data):
         frame_num = len(valid)
         if uniform_target == "both":    
             valid = np.linspace(0, last - 1, frame_num).astype(int).tolist()
-            valid = list(set(valid))
+            valid = sorted(set(valid))
         elif uniform_target == "step1":
             pass # valid 需要在select2的输入进行采样，这里仍然使用select2输出的
         elif uniform_target == "step2":
             select1_valid = select_data1[data["qid"]]["relevant_idx"]
             valid_idx = np.linspace(0, len(select1_valid) - 1, frame_num).astype(int).tolist()
-            valid_idx = list(set(valid_idx))
+            valid_idx = sorted(set(valid_idx))
             valid = [select1_valid[i] for i in valid_idx]
         else:
             raise ValueError("uniform_target must be one of 'both', 'step1', 'step2'")
 
     image = None
+    boxes = []
+    
+    def processor(i):
+        assert not (use_crop or use_anno), "use_crop and use_anno cannot be both True"
+        assert not (use_crop and use_cont), "use_crop and use_cont cannot be both True"
+        img = frames[valid[i]]
+        if use_crop:
+            img = crop_img(img, boxes[i])
+        if add_frame_idx:
+            img = annote_frame_idx(img, valid[i])
+        if use_anno:
+            img = annote_box(img, boxes[i])
+        if use_cont:
+            if i % 2 == 0:
+                img = frames[valid[i]]
+            else:
+                img = crop_img(frames[valid[i]], boxes[i])
+        return img
     
     if (use_crop or use_anno or use_cont):
+        invalid_idx = []
         results = results_data[qid]["results"] if qid in results_data else {}
-        boxes = []
         for i in valid:
             if str(i) not in results:
                 boxes.append([])
+                invalid_idx.append(i)
                 continue
             if single_obj:
-                boxes.append([b for v in results[str(i)].values() for b in v["boxes"]])
+                boxes.append([b for v in results[str(i)].values() for v2 in v for b in v2["boxes"]])
             else:
                 boxes.append(results[str(i)]["boxes"])
-        if use_crop:
-            image = make_grid(
-                [crop_img(frames[v], boxes[i]) for i, v in enumerate(valid)],
-                max_frame=max_frame,
-            )
-        elif use_anno:
-            image = make_anno_grid(
-                [frames[i] for i in valid], boxes, max_frame=max_frame
-            )
-        elif use_cont:
-            image = []
-            for i, (v, b) in enumerate(zip(valid, boxes)):
-                if i % 2 == 0:
-                    image.append(frames[v])
-                else:
-                    image.append(crop_img(frames[v], b))
-            image = make_grid(image, max_frame=max_frame)
-    elif add_frame_idx:
-        image = make_grid([annote_frame_idx(frames[i], i) for i in valid])
-    else:
-        frames = [frames[i] for i in valid]
-        image = make_grid(frames, max_frame)
-    save_dir = Path(output_path.replace(".jsonl", "_image"))
-    save_dir.mkdir(parents=True, exist_ok=True)
-    image.save(str(save_dir.joinpath(f"{qid}.jpg")))
+        if len(invalid_idx) > 0:
+            print(f"Warning: {invalid_idx} not in {qid}, using empty boxes")
+    frames = [processor(i) for i in range(len(valid))]
+    image = make_grid(frames, max_frame)
+    # save_dir = Path(output_path.replace(".jsonl", "_image"))
+    # save_dir.mkdir(parents=True, exist_ok=True)
+    # image.save(str(save_dir.joinpath(f"{qid}.jpg")))
     if use_anno:
         prompt = PROMPT1_anno
     elif use_cont:
@@ -172,7 +172,7 @@ if __name__ == "__main__":
 
     output_path = f"./outputs/{exp_name}/answer.jsonl"
     save_data(cfg, f"./outputs/{exp_name}/answer.yml")
-
+    print_cfg(cfg)
     select_data2 = load_data(f"./outputs/{select2_cfg['exp_name']}/select2.jsonl")
     select_data1 = load_data(f"./outputs/{select_cfg['exp_name']}/select.jsonl")
     

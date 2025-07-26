@@ -6,7 +6,7 @@ from utils import create_model, get_frame, make_grid, annote_frame_idx
 from pathlib import Path
 import numpy as np
 from utils import crop_img, parse_json, parse_list
-from utils import save_data
+from utils import save_data, print_cfg
 
 example = {
     "frame": [1, "2-4", 5],
@@ -30,32 +30,36 @@ async def frame_select(runner, **data):
     if qid not in results_data or data["qid"] not in select_data:
         print(f"Warning: {qid} not in results or select_data, using {max_frame} frames")
         valid = np.linspace(0, len(frames) - 1, max_frame).astype(int).tolist()
-        valid = list(set(valid))
+        valid = sorted(set(valid))
         results = {}
         last = len(frames) 
     else:
-        results = results_data[qid]    
+        results = results_data[qid]["results"]  
         valid = select_data[data["qid"]]["relevant_idx"]
         last = results_data[data["qid"]]["last"]
     if uniform_sample:
         valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
-        valid = list(set(valid))
+        valid = sorted(set(valid))
     for i in valid:
         if str(i) not in results:
             boxes.append([])
             continue
         if single_obj:
-            boxes.append([b for v in results[str(i)].values() for b in v["boxes"]])
+            boxes.append([b for v in results[str(i)].values() for v2 in v for b in v2["boxes"]])
         else:
             boxes.append(results[str(i)]["boxes"])
 
-    if use_crop:
+    if use_crop and add_frame_idx:
         images = [
             annote_frame_idx(crop_img(frames[v], boxes[i]), v)
             for i, v in enumerate(valid)
         ]
-    else:
+    elif add_frame_idx:
         images = [annote_frame_idx(frames[v], v) for i, v in enumerate(valid)]
+    elif use_crop:
+        images = [crop_img(frames[v], boxes[i]) for i, v in enumerate(valid)]
+    else:
+        images = [frames[v] for i, v in enumerate(valid)]
     image = make_grid(images, max_frame=max_frame)
     relevant_idx = []
     try:
@@ -98,7 +102,7 @@ if __name__ == "__main__":
     max_frame = cfg["max_frame"]
     use_crop = cfg.get("use_crop", True)
     uniform_sample = cfg.get("uniform_sample", False)
-
+    add_frame_idx = cfg.get("add_frame_idx", True)
     question_only = cfg.get("question_only", False)
 
     results_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
@@ -114,7 +118,7 @@ if __name__ == "__main__":
 
     output_path = f"./outputs/{exp_name}/select2.jsonl"
     save_data(cfg, f"./outputs/{exp_name}/select2.yml")
-
+    print_cfg(cfg)
     select_data = load_data(f"./outputs/{select_cfg['exp_name']}/select.jsonl")
 
     model = create_model("api", model_name)

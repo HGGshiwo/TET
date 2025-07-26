@@ -1,22 +1,13 @@
-# select: ./outputs/exp0623/select.yml
-# select: ./outputs/exp0623_single/select.yml
-# select2: ./outputs/exp0623_tem2/select2.yml
-# select2: ./outputs/exp0709_egoschema_ab2/select2.yml
-# select2: ./outputs/exp0629_nexmc/select2.yml
-# select2: ./outputs/exp0623_select_wo_crop/select2.yml
-select2: ./outputs/exp0711_egoschema_full/select2.yml
-uniform_sample: true
-# uniform_sample: false
-uniform_target: step1
-use_crop: false
-# use_crop: true
-use_anno: false
-# use_anno: true
-# use_cont: true
-use_cont: false
 add_frame_idx: true
-max_frame: 48
+exp_name: frame_4808(2)
+max_frame: 8
 model_name: gpt-4.1-2025-04-14
-# model_name: qwen-plus-latest
+select2: ./outputs/frame_4848(2)/select2.yml
+uniform_sample: false
+uniform_target: step1
+use_anno: false
+use_cont: false
 use_cot: true
-exp_name: exp0711_egoschema_full
+use_crop: false
+
+

@@ -10,14 +10,41 @@ import math
 import jsonlines
 import decord
 from PIL import Image, ImageDraw, ImageFont
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
 from collections import defaultdict
 from torchvision.utils import make_grid as tv_make_grid
 from typing import List, Generator
-
+import os
 decord.bridge.set_bridge("torch")
 
+from tqdm import tqdm
+import sys
+import contextlib   
+
+class DummyFile:
+    def __init__(self, file):
+        if file is None:
+            file = sys.stderr
+        self.file = file
+
+    def write(self, x):
+        if len(x.rstrip()) > 0:
+            tqdm.write(x, file=self.file)
+
+    def flush(self):
+        pass
+    
+@contextlib.contextmanager
+def redirect_stdout(file=None):
+    if file is None:
+        file = sys.stderr
+    old_stdout = file
+    sys.stdout = DummyFile(file)
+    yield
+
+def print_cfg(cfg):
+    print(json.dumps(cfg, indent=4, ensure_ascii=False))    
 
 def save_data(data, path):
     path = Path(path)
@@ -126,13 +153,6 @@ def load_frame_features(name_ids, save_folder):
     filepath = Path(save_folder).joinpath(filename)
     img_feats = torch.load(filepath, weights_only=True, map_location="cpu")
     return img_feats
-
-
-def uniform_sample(arr, k):
-    # Use linspace to generate k evenly spaced indices, then round and convert to integers.
-    indices = np.linspace(0, len(arr) - 1, k, dtype=int)
-    indices = list(set(indices))
-    return [arr[i] for i in indices]
 
 
 class QwenModel:
@@ -262,7 +282,12 @@ class ClipModel:
 class APIModel:
     def __init__(self, model_name):
         load_dotenv()
-        self.client = AsyncOpenAI()
+        base_url = os.environ.get("OPENAI_BASE_URL", None)
+        if base_url is None:
+            api_version="2024-10-21" 
+            self.client = AsyncAzureOpenAI(api_version=api_version)
+        else:
+            self.client = AsyncOpenAI()
         self.model_name = model_name
 
     async def forward(self, user_text, frame=None):
@@ -468,7 +493,7 @@ def make_grid(image_list, max_frame=8, pad_width=10):
     assert max_frame <= 49, "max_frame should be less than 49"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
-        idx = list(set(idx))
+        idx = sorted(set(idx))
         image_list = [image_list[i] for i in idx]
     row_num, col_num = image_split[len(image_list)]
     # nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
@@ -481,13 +506,12 @@ def make_grid(image_list, max_frame=8, pad_width=10):
     out = Image.fromarray(out)
     return out
 
-
 def make_anno_grid(image_list, boxes, max_frame=8, pad_width=10):
     frame_limit = max(list(image_split.keys()))
     assert max_frame <= frame_limit, f"max_frame should be less than {frame_limit}"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
-        idx = list(set(idx))
+        idx = sorted(set(idx))
         image_list = [image_list[i] for i in idx]
         boxes = [boxes[i] for i in idx]
     row_num, col_num = image_split[len(image_list)]
@@ -513,7 +537,7 @@ def make_crop_grid(image_list, boxes, max_frame=8, pad_width=10):
     assert max_frame <= frame_limit, f"max_frame should be less than {frame_limit}"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
-        idx = list(set(idx))
+        idx = sorted(set(idx))
         image_list = [image_list[i] for i in idx]
         boxes = [boxes[i] for i in idx]
     row_num, col_num = image_split[len(image_list)]
@@ -679,3 +703,10 @@ def annote_frame_idx(image, frame_idx):
         stroke_fill=(255, 255, 255),
     )
     return img
+
+def annote_box(image, box):
+    crop = image.copy()
+    draw = ImageDraw.Draw(crop)
+    for b in box:
+        draw.rectangle(b, outline="red", width=2)
+    return crop

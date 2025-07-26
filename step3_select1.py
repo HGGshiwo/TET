@@ -2,7 +2,7 @@ from runner import AsyncRunner
 import numpy as np
 from utils import load_data, load_data, save_data
 import torch
-from utils import parse_json, create_model, parse_list
+from utils import parse_json, create_model, parse_list, print_cfg
 import asyncio
 
 PROMPT_v1 = """
@@ -140,6 +140,7 @@ if __name__ == "__main__":
         exp_name = obj_cfg["exp_name"]
     cfg["exp_name"] = exp_name
     save_data(cfg, f"./outputs/{exp_name}/select.yml")
+    print_cfg(cfg)
     output_path = f"./outputs/{exp_name}/select.jsonl"
 
     model = create_model("api", model_name)
