@@ -1,7 +1,7 @@
 from runner import AsyncRunner
 import json
 import asyncio
-from utils import load_data
+from utils import load_data, send_post_request
 from utils import (
     parse_json,
     create_model,
@@ -93,9 +93,10 @@ async def frame_select(runner, **data):
             print(f"Warning: {invalid_idx} not in {qid}, using empty boxes")
     frames = [processor(i) for i in range(len(valid))]
     image = make_grid(frames, max_frame)
-    # save_dir = Path(output_path.replace(".jsonl", "_image"))
-    # save_dir.mkdir(parents=True, exist_ok=True)
-    # image.save(str(save_dir.joinpath(f"{qid}.jpg")))
+    if save_img:
+        save_dir = Path(output_path.replace(".jsonl", "_image"))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        image.save(str(save_dir.joinpath(f"{qid}.jpg")))
     if use_anno:
         prompt = PROMPT1_anno
     elif use_cont:
@@ -149,7 +150,8 @@ if __name__ == "__main__":
     use_cont = cfg["use_cont"]  # 使用拼接
     use_cot = cfg.get("use_cot", False)  # 是否使用链式推理
     add_frame_idx = cfg["add_frame_idx"]
-
+    save_img = cfg.get("save_img", False)  # 是否保存图片
+    
     assert not (
         use_crop and use_anno and use_cont
     ), "use_crop and use_anno and use_cont cannot be both True"
@@ -211,7 +213,12 @@ if __name__ == "__main__":
         failed_path = output_path.replace(".jsonl", ".txt")
         Path(failed_path).write_text("\n".join(failed))
         print(out)
-    else:
+    elif len(answers) == 5031:
         answer_path = output_path.replace(".jsonl", ".json")
         Path(answer_path).write_text(json.dumps(answers, indent=4, ensure_ascii=False))
-    
+        try:
+            response = send_post_request(answer_path)
+            print(f"Response Status Code: {response.status_code}")
+            print(f"Response Content:\n{response.text}")
+        except Exception as e:
+            print(f"Error sending POST request: {e}")

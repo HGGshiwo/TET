@@ -1,7 +1,7 @@
 box_threshold: 0.4
-exp_name: dino_base
-grounding_model: D:/models/grounding-dino-base
+exp_name: obj_single_N
+grounding_model: D:/models/grounding-dino-tiny
 obj: ./outputs/exp0629_egoschema/obj.yml
 question_only: false
-single_obj: true
+single_obj: false
 text_threshold: 0.3

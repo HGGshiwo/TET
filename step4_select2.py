@@ -36,6 +36,7 @@ async def frame_select(runner, **data):
     else:
         results = results_data[qid]["results"]  
         valid = select_data[data["qid"]]["relevant_idx"]
+        valid = [v > 0 and v < len(frames) for v in valid]
         last = results_data[data["qid"]]["last"]
     if uniform_sample:
         valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()

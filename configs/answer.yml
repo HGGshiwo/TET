@@ -1,13 +1,15 @@
 add_frame_idx: true
-exp_name: frame_4808(2)
+exp_name: exp0711_egoschema_full(2)
 max_frame: 8
 model_name: gpt-4.1-2025-04-14
-select2: ./outputs/frame_4848(2)/select2.yml
+select2: ./outputs/exp0711_egoschema_full/select2.yml
 uniform_sample: false
 uniform_target: step1
 use_anno: false
 use_cont: false
 use_cot: true
 use_crop: false
+save_img: false
+
 
 

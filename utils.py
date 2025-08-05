@@ -16,6 +16,7 @@ from collections import defaultdict
 from torchvision.utils import make_grid as tv_make_grid
 from typing import List, Generator
 import os
+import requests
 decord.bridge.set_bridge("torch")
 
 from tqdm import tqdm
@@ -490,16 +491,14 @@ image_split = {
 
 
 def make_grid(image_list, max_frame=8, pad_width=10):
-    assert max_frame <= 49, "max_frame should be less than 49"
-    if len(image_list) > max_frame:
-        idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
-        idx = sorted(set(idx))
-        image_list = [image_list[i] for i in idx]
-    row_num, col_num = image_split[len(image_list)]
-    # nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
+    row_num, col_num = best_layout(min(len(image_list), max_frame), *image_list[0].size)
     nrow = col_num
     images = [torch.from_numpy(np.array(image)) for image in image_list]
-    images += [torch.zeros_like(images[0])] * (nrow * row_num - len(image_list))
+    if len(images) < nrow * row_num:
+        images += [torch.zeros_like(images[0])] * (nrow * row_num - len(images))
+    else:
+        idx = np.linspace(0, len(images) - 1, nrow * row_num).astype(int)
+        images = [images[i] for i in idx]
     images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     out = tv_make_grid(images, nrow=nrow, padding=pad_width)
     out = out.permute(1, 2, 0).numpy().astype(np.uint8)
@@ -710,3 +709,34 @@ def annote_box(image, box):
     for b in box:
         draw.rectangle(b, outline="red", width=2)
     return crop
+
+def send_post_request(json_file):
+    url = "https://validation-server.onrender.com/api/upload/"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    with open(json_file, 'r') as f:
+        data = json.load(f)
+    response = requests.post(url, headers=headers, json=data)
+    return response
+
+
+import math
+
+def best_layout(n, w, h):
+    best = None
+    for r in range(1, n+1):
+        c = n // r
+        if c == 0:
+            continue
+        used = r * c
+        rem = n - used
+        ratio = (c * w) / (r * h)
+        diff = abs(ratio - 1)
+        # 优先rem最小，其次diff最小
+        key = rem + diff
+        if (best is None) or (key < best[0]):
+            best = (key, r, c)
+    _, r, c = best
+    return r, c
+
