@@ -349,6 +349,22 @@ def list2dict(path, level=1):
             input_data[key] = sorted(input_data[key].items(), key=lambda x: x[0])
     return input_data
 
+# def parse_json(pred, list=False):
+#     pred = pred.split("```json")[-1].split("```")[0]
+#     try:
+#         pred = json.loads(pred)
+#     except json.JSONDecodeError:
+#         try:
+#             start = "{" if not list else "["
+#             end = "}" if not list else "]"
+#             pred = pred.split(start)[1].split(end)[0]
+#             pred = start + pred + end
+#             pred = json.loads(pred)
+#         except Exception as e:
+#             print(f"Error parsing JSON: {e}")
+#             # return {} if not list else []
+#             return None
+#     return pred
 
 def parse_json(pred, list=False):
     _raw = pred
@@ -361,7 +377,7 @@ def parse_json(pred, list=False):
             end = "}" if not list else "]"
             pred = pred.split(start)[1].split(end)[0]
             pred = start + pred + end
-            pred = pred.replace("'", '"').replace("‘", '"').replace("’", '"')
+            # pred = pred.replace("'", '"').replace("‘", '"').replace("’", '"')
             pred = json.loads(pred)
         except Exception as e:
             if list:
