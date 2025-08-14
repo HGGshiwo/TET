@@ -1,10 +1,12 @@
 egoschema:
   frame_fps: 1
-  num_examples_to_run: -1
+  num_examples_to_run: 300
   video_path: D:/datasets/egoschema/videos
-  # anno_path: D:/datasets/LLoVi_caption/egoschema/subset_anno.json 
   anno_path: D:/datasets/egoschema/questions.json
   subset_path: D:/datasets/egoschema/subset_answers.json
+  # video_path: /data/raid5/zhangbingwen/egoschema/videos
+  # anno_path: /data/raid5/zhangbingwen/egoschema/questions.json
+  # subset_path: /data/raid5/zhangbingwen/egoschema/subset_answers.json
 
 nextoe:
   frame_fps: 1

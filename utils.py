@@ -17,11 +17,13 @@ from torchvision.utils import make_grid as tv_make_grid
 from typing import List, Generator
 import os
 import requests
+
 decord.bridge.set_bridge("torch")
 
 from tqdm import tqdm
 import sys
-import contextlib   
+import contextlib
+
 
 class DummyFile:
     def __init__(self, file):
@@ -35,7 +37,8 @@ class DummyFile:
 
     def flush(self):
         pass
-    
+
+
 @contextlib.contextmanager
 def redirect_stdout(file=None):
     if file is None:
@@ -44,8 +47,10 @@ def redirect_stdout(file=None):
     sys.stdout = DummyFile(file)
     yield
 
+
 def print_cfg(cfg):
-    print(json.dumps(cfg, indent=4, ensure_ascii=False))    
+    print(json.dumps(cfg, indent=4, ensure_ascii=False))
+
 
 def save_data(data, path):
     path = Path(path)
@@ -156,8 +161,15 @@ def load_frame_features(name_ids, save_folder):
     return img_feats
 
 
-class QwenModel:
+import torch
+from torch import nn
+
+
+class QwenModel(nn.Module):
+    pretrained_path = "D:/models/Qwen2.5-VL-3B-Instruct"
+
     def __init__(self, pretrained_path):
+        super(QwenModel, self).__init__()
         from transformers import (
             Qwen2_5_VLForConditionalGeneration,
             AutoTokenizer,
@@ -166,13 +178,11 @@ class QwenModel:
 
         # default: Load the model on the available device(s)
         if pretrained_path is None:
-            pretrained_path = "D:/models/Qwen2.5-VL-3B-Instruct"
+            pretrained_path = QwenModel.pretrained_path
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            pretrained_path, torch_dtype="auto", device_map="auto"
+            pretrained_path, torch_dtype="auto", device_map="cpu"
         )
-        self.processor = AutoProcessor.from_pretrained(
-            "D:/models/Qwen2.5-VL-3B-Instruct"
-        )
+        self.processor = AutoProcessor.from_pretrained(pretrained_path)
         from qwen_vl_utils import process_vision_info
 
         self.processor.process_vision_info = process_vision_info
@@ -200,7 +210,7 @@ class QwenModel:
             )
             for msg in messages
         ]
-        image_inputs, video_inputs = self.process_vision_info(messages)
+        image_inputs, video_inputs = self.processor.process_vision_info(messages)
         inputs = self.processor(
             text=texts,
             images=image_inputs,
@@ -208,10 +218,12 @@ class QwenModel:
             padding=True,
             return_tensors="pt",
         )
-        inputs = inputs.to("cuda")
+        inputs = inputs.to(self.model.device)
 
         # Batch Inference
-        generated_ids = self.model.generate(**inputs, max_new_tokens=128)
+        generated_ids = self.model.generate(
+            **inputs, max_new_tokens=128, do_sample=False, temperature=None
+        )
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
             for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -225,9 +237,11 @@ class QwenModel:
 
 
 class OpenClipModel:
+    pretrained_path = r"laion2b_s34b_b79k"
+
     def __init__(self, pretrained_path):
         if pretrained_path is None:
-            pretrained_path = r"laion2b_s34b_b79k"
+            pretrained_path = OpenClipModel.pretrained_path
         import open_clip
 
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
@@ -262,8 +276,9 @@ class OpenClipModel:
 
 class ClipModel:
     def __init__(self, pretrained_path):
+        pretrained_path = r"D:\models\ViT-B-32.pt"
         if pretrained_path is None:
-            pretrained_path = r"D:\models\ViT-B-32.pt"
+            pretrained_path = ClipModel.pretrained_path
         self.model, self.preprocess = clip.load(pretrained_path, device="cuda")
 
     def forward(self, keywards, images):
@@ -285,7 +300,7 @@ class APIModel:
         load_dotenv()
         base_url = os.environ.get("OPENAI_BASE_URL", None)
         if base_url is None:
-            api_version="2024-10-21" 
+            api_version = "2024-10-21"
             self.client = AsyncAzureOpenAI(api_version=api_version)
         else:
             self.client = AsyncOpenAI()
@@ -336,6 +351,7 @@ def list2dict(path, level=1):
 
 
 def parse_json(pred, list=False):
+    _raw = pred
     pred = pred.split("```json")[-1].split("```")[0]
     try:
         pred = json.loads(pred)
@@ -345,9 +361,17 @@ def parse_json(pred, list=False):
             end = "}" if not list else "]"
             pred = pred.split(start)[1].split(end)[0]
             pred = start + pred + end
+            pred = pred.replace("'", '"').replace("‘", '"').replace("’", '"')
             pred = json.loads(pred)
         except Exception as e:
-            print(f"Error parsing JSON: {e}")
+            if list:
+                try:
+                    pred = pred.replace("[", "").replace("]", "").split(",")
+                    pred = [pred.strip().replace("\"", "") for pred in pred]
+                    return pred
+                except Exception as e2:
+                    e = e2
+            print(f"Error parsing JSON: {_raw}")
             # return {} if not list else []
             return None
     return pred
@@ -398,6 +422,37 @@ def get_frame(video_path, fps: int, return_idx=False):
         return video, idx
     return video  # (C, H, W)
 
+class LazyFrameLoader:
+    @classmethod
+    def create(cls, video_path, fps, batch_size=1):
+        vr = decord.VideoReader(str(video_path))
+        origin_fps = vr.get_avg_fps()
+        ratio = origin_fps / fps
+        idx = list(range(0, len(vr), int(ratio)))
+        if idx[-1] != len(vr) - 1:
+            idx.append(len(vr) - 1)
+        idx2 = list(range(len(idx)))
+        idx = chunk(idx, batch_size)
+        idx2 = chunk(idx2, batch_size)
+        return [cls(video_path, i, i2) for i, i2 in zip(idx, idx2)]
+    
+    def __init__(self, path, idx, idx2):
+        self._idx = idx
+        self.idx = idx2 # 以1fs为单位的索引
+        self.path = path
+        # self.vr = vr
+
+    def __len__(self):
+        return len(self.idx)
+    
+    def load(self, return_idx=False):
+        vr = decord.VideoReader(str(self.path))
+        video = vr.get_batch(self._idx)
+        video = video.cpu().numpy()
+        video = [Image.fromarray(v) for v in video]
+        if return_idx:
+            return video, self.idx
+        return video  # (C, H, W)
 
 def generate_table(row_names, data_dict, filter=True):
     # 获取列名
@@ -490,20 +545,38 @@ image_split = {
 }
 
 
+# def make_grid(image_list, max_frame=8, pad_width=10):
+#     row_num, col_num = best_layout(min(len(image_list), max_frame), *image_list[0].size)
+#     nrow = col_num
+#     images = [torch.from_numpy(np.array(image)) for image in image_list]
+#     if len(images) < nrow * row_num:
+#         images += [torch.zeros_like(images[0])] * (nrow * row_num - len(images))
+#     else:
+#         idx = np.linspace(0, len(images) - 1, nrow * row_num).astype(int)
+#         images = [images[i] for i in idx]
+#     images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
+#     out = tv_make_grid(images, nrow=nrow, padding=pad_width)
+#     out = out.permute(1, 2, 0).numpy().astype(np.uint8)
+#     out = Image.fromarray(out)
+#     return out
+
 def make_grid(image_list, max_frame=8, pad_width=10):
-    row_num, col_num = best_layout(min(len(image_list), max_frame), *image_list[0].size)
+    assert max_frame <= 49, "max_frame should be less than 49"
+    if len(image_list) > max_frame:
+        idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)
+        idx = sorted(set(idx))
+        image_list = [image_list[i] for i in idx]
+    row_num, col_num = image_split[len(image_list)]
+    # nrow = len(image_list) // row_num + (1 if len(image_list) % row_num != 0 else 0)
     nrow = col_num
     images = [torch.from_numpy(np.array(image)) for image in image_list]
-    if len(images) < nrow * row_num:
-        images += [torch.zeros_like(images[0])] * (nrow * row_num - len(images))
-    else:
-        idx = np.linspace(0, len(images) - 1, nrow * row_num).astype(int)
-        images = [images[i] for i in idx]
+    images += [torch.zeros_like(images[0])] * (nrow * row_num - len(image_list))
     images = torch.stack(images, dim=0).permute(0, 3, 1, 2)
     out = tv_make_grid(images, nrow=nrow, padding=pad_width)
     out = out.permute(1, 2, 0).numpy().astype(np.uint8)
     out = Image.fromarray(out)
     return out
+
 
 def make_anno_grid(image_list, boxes, max_frame=8, pad_width=10):
     frame_limit = max(list(image_split.keys()))
@@ -703,6 +776,7 @@ def annote_frame_idx(image, frame_idx):
     )
     return img
 
+
 def annote_box(image, box):
     crop = image.copy()
     draw = ImageDraw.Draw(crop)
@@ -710,12 +784,11 @@ def annote_box(image, box):
         draw.rectangle(b, outline="red", width=2)
     return crop
 
+
 def send_post_request(json_file):
     url = "https://validation-server.onrender.com/api/upload/"
-    headers = {
-        "Content-Type": "application/json"
-    }
-    with open(json_file, 'r') as f:
+    headers = {"Content-Type": "application/json"}
+    with open(json_file, "r") as f:
         data = json.load(f)
     response = requests.post(url, headers=headers, json=data)
     return response
@@ -723,9 +796,10 @@ def send_post_request(json_file):
 
 import math
 
+
 def best_layout(n, w, h):
     best = None
-    for r in range(1, n+1):
+    for r in range(1, n + 1):
         c = n // r
         if c == 0:
             continue
@@ -739,4 +813,3 @@ def best_layout(n, w, h):
             best = (key, r, c)
     _, r, c = best
     return r, c
-

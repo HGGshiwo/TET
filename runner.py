@@ -8,7 +8,7 @@ from utils import redirect_stdout
 
 decord.bridge.set_bridge("torch")
 from tqdm import tqdm
-from utils import load_data, load_jsonl2dict, get_frame
+from utils import load_data, load_jsonl2dict, get_frame, LazyFrameLoader
 import jsonlines
 
 
@@ -95,35 +95,23 @@ class Runner:
         if len(batch_data) > 0:
             yield batch_data
 
-    def frame_iter(self):
+    def frame_iter(self, use_tqdm=False):
         video_path = self.dataset.config.video_path
         data_iter = (
             self.dataset.get_video_info() if self.iter_key == "vid" else self.dataset
         )
-        batch_data = []
+        bar = None if not use_tqdm else tqdm(total=len(self.dataset), desc="Generating frames")
         for data in data_iter:
             _video_path = Path(video_path).joinpath(data["video_path"])
-            for _idx, (frame, idx) in enumerate(zip(*get_frame(_video_path, self.video_fps, return_idx=True))):
-                if (
-                    data[self.iter_key] in self.processed
-                    and _idx in self.processed[data[self.iter_key]]
-                ):
-                    continue
-                data["idx"] = _idx
-                if self.filter is not None and self.filter(data) is False:
-                    continue
-                data.update({"frame": frame, "idx": _idx})
-                self.total += 1
-                if self.batch_size == 1:
-                    yield data
-                    continue
-                batch_data.append(data)
-                if len(batch_data) == self.batch_size:
-                    yield batch_data
-                    batch_data = []
-        if len(batch_data) > 0:
-            yield batch_data
-
+            batch_loader = LazyFrameLoader.create(_video_path, self.video_fps, self.batch_size)
+            for d in batch_loader:
+                yield {"frame": d, **data.copy()}
+            if bar is not None:
+                bar.update(1)
+        if bar is not None:
+            bar.close()
+            
+            
     def handle_result(self, writer, result):
         if self.batch_size == 1:
             if result is not None:
@@ -144,10 +132,8 @@ class Runner:
         submit = self.create_submit(**kwargs)
         iter_func = self.frame_iter if self.iter_frame else self.data_iter
         for data in iter_func():
-            if self.batch_size == 1:
-                self.tasks.append(submit(self.task, self, **data))
-            else:
-                self.tasks.append(submit(self.task, self, data))
+            self.tasks.append(submit(self.task, self, **data))
+
 
     def compelete_loop(self):
         as_completed = self.create_as_completed()
@@ -196,15 +182,18 @@ class AsyncRunner(Runner):
 
 import torch
 class MultiGPURunner(Runner):
-    def worker(self, gpu_id, model):
+    def worker(self, gpu_id, model_cls):
         # 每个进程绑定自己的GPU
         torch.cuda.set_device(gpu_id)
-        model = model.to(f"cuda:{gpu_id}")
+        model = model_cls().to(f"cuda:{gpu_id}")
         while True:
             task_data = self.task_queue.get()
             if task_data is None:
                 break
-            result = self.task(self, model=model, **task_data)
+            if self.batch_size > 1:
+                result = self.task(self, model=model, data=task_data)
+            else:
+                result = self.task(self, model=model, **task_data)
             self.result_queue.put(result)
         
     def __call__(self, model_class, gpu_ids=[]):
@@ -213,7 +202,7 @@ class MultiGPURunner(Runner):
         self.result_queue = manager.Queue()
 
         # 1. 任务入队
-        iter_func = self.frame_iter if self.iter_frame else self.data_iter
+        iter_func = lambda: self.frame_iter(True) if self.iter_frame else self.data_iter
         total = 0
         for data in iter_func():
             self.task_queue.put(data)
@@ -225,8 +214,7 @@ class MultiGPURunner(Runner):
         # 3. 启动进程
         processes = []
         for gpu_id in gpu_ids:
-            m = model_class().cpu()
-            p = mp.Process(target=self.worker, args=(gpu_id, m))
+            p = mp.Process(target=self.worker, args=(gpu_id, model_class))
             p.start()
             processes.append(p)
 

@@ -1,7 +1,8 @@
-box_threshold: 0.4
-exp_name: obj_single_N
-grounding_model: D:/models/grounding-dino-tiny
+# box_threshold: 0.4
+exp_name: qwenvl_test
+# grounding_model: D:/models/grounding-dino-tiny
 obj: ./outputs/exp0629_egoschema/obj.yml
 question_only: false
-single_obj: false
-text_threshold: 0.3
+model_path: D:/models/Qwen2.5-VL-3B-Instruct
+# single_obj: false
+# text_threshold: 0.3
