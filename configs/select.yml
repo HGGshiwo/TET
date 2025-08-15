@@ -1,5 +1,5 @@
 dino: ./outputs/exp0629_egoschema/dino.yml
-exp_name: qwenvl_test5
+exp_name: ques_TT
 model_name: gpt-4.1-2025-04-14
 prompt_version: v3
 question_only: true

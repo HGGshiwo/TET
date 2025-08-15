@@ -1,9 +1,9 @@
 add_frame_idx: true
-exp_name: qwenvl_test5
+exp_name: egoschema_full
 max_frame: 8
 model_name: gpt-4.1-2025-04-14
-save_img: true
-select2: ./outputs/qwenvl_test5/select2.yml
+save_img: false
+select2: ./outputs/egoschema_full/select2.yml
 uniform_sample: false
 uniform_target: step1
 use_anno: false
