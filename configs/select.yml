@@ -1,5 +1,5 @@
-dino: ./outputs/exp0629_egoschema/dino.yml
-exp_name: ques_TT
+dino: ./outputs/egoschema_full/dino.yml
+exp_name: egoschema_full
 model_name: gpt-4.1-2025-04-14
 prompt_version: v3
 question_only: true

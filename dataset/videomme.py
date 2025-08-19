@@ -1,0 +1,123 @@
+from .builder import BaseDataset
+from utils import *
+
+
+OPTIONS = ["A", "B", "C", "D", "E"]
+class VideoMMEDataset(BaseDataset):
+    def __init__(self, config, split="long"):
+        super().__init__(config, split)
+
+    def get_anno(self):        
+        anno = load_data(self.config.anno_path)
+        return anno
+
+    def build(self):    
+        data = []
+        for item in self.anno:
+            if item["duration"] != self.split:
+                continue
+            qid = item["question_id"]
+            vid = item["videoID"]
+            question = item["question"]
+            question = [question.strip()]
+            for i, c in enumerate(item["options"]):
+                question.append(f"{OPTIONS[i]}. {c.strip()}")
+            question = "\n".join(question)
+            new_item = {
+                "qid": qid,
+                "vid": vid,
+                "video_path": vid + ".mp4",
+                "question": question,
+                "truth": item["answer"],
+            }
+            data.append(new_item)
+        return data
+    
+    def parse_multi_choice_response(self, response):
+        """
+        Parse the prediction from the generated response.
+        Return the predicted index e.g., A, B, C, D.
+        https://github.com/MMMU-Benchmark/MMMU/blob/51ce7f3e829c16bb44bc5445782686b4c3508794/eval/eval_utils.py#L10
+        """
+        candidates = []
+        all_choices = ["A", "B", "C", "D", "E"]
+        response = response.replace("*", "")
+        str_list = [r.strip() for r in response.split("\n") if r.strip() != ""]
+        for res in str_list:
+            res = res.split(":")[-1].strip()
+            if res in all_choices:
+                candidates.append(res)
+                break
+        
+        for char in [",", ".", "!", "?", ";", ":", "'"]:
+            response = response.strip(char)
+        
+        response = " " + response + " "  # add space to avoid partial match
+
+        index_ans = True
+        ans_with_brack = False
+        
+        for choice in all_choices:  # e.g., (A) (B) (C) (D)
+            if f"({choice})" in response:
+                candidates.append(choice)
+                ans_with_brack = True
+
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A B C D
+                if f"{choice} " in response:
+                    candidates.append(choice)
+
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A. B. C. D.
+                if f"{choice}." in response:
+                    candidates.append(choice)
+
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A. B. C. D.
+                if f"{choice}:" in response:
+                    candidates.append(choice)
+        
+        if len(candidates) == 0:
+            for choice in all_choices:  # e.g., A. B. C. D.
+                if response.strip().startswith(choice):
+                    candidates.append(choice)
+                                
+        # # if all above doesn't get candidates, check if the content is larger than 5 tokens and try to parse the example
+        # if len(candidates) == 0 and len(response.split()) > 5:
+        #     for index, ans in index2ans.items():
+        #         if ans.lower() in response.lower():
+        #             candidates.append(index)
+        #             index_ans = False  # it's content ans.
+
+        if len(candidates) == 0:  # still not get answer, randomly choose one.
+            # pred_index = random.choice(all_choices)
+            # pred_index = all_choices[0]  # use the first one as default
+            pred_index = None
+        elif len(candidates) > 1:
+            pred_index = None
+        else:  # if only one candidate, use it.
+            pred_index = candidates[0]
+
+        return pred_index
+    
+    def get_compute_metrics2(self):
+        results = dict(total_num=0, correct_num=0)
+        failed = []
+        def compute_metrics(pred, item, compute_result):
+            parsed_pred = self.parse_multi_choice_response(pred)
+            if parsed_pred is None:
+                print("None", item["qid"])
+            if parsed_pred == item["truth"]:
+                results["correct_num"] += 1
+            else:
+                # print(item["qid"])
+                failed.append(item["qid"])
+            results["total_num"] += 1
+            
+            if compute_result:
+                return {
+                    "acc": results["correct_num"] / results["total_num"],
+                    "failed": failed,
+                }
+
+        return compute_metrics

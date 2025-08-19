@@ -165,12 +165,12 @@ if __name__ == "__main__":
     out_data = load_data(output_path)
     for item in runner.dataset:
         if item["qid"] not in input_data:
-            print(f"Warning: {item['qid']} not in input data")
+            # print(f"Warning: {item['qid']} not in input data")
             continue
         results = input_data[item["qid"]]["results"]
         total += 1
         if item["qid"] not in out_data:
-            print(f"Warning: {item['qid']} not in output data")
+            # print(f"Warning: {item['qid']} not in output data")
             continue
         out = out_data[item["qid"]]
         if out["invalid_type"] == "quest_no_obj":

@@ -1,6 +1,12 @@
+videomme:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: D:/datasets/Video-MME/data
+  anno_path: D:/datasets/Video-MME/videomme/test-00000-of-00001.parquet
+  
 egoschema:
   frame_fps: 1
-  num_examples_to_run: 300
+  num_examples_to_run: -1
   video_path: D:/datasets/egoschema/videos
   anno_path: D:/datasets/egoschema/questions.json
   subset_path: D:/datasets/egoschema/subset_answers.json

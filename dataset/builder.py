@@ -6,7 +6,7 @@ from .base import BaseDataset
 from .egoschema import EgoSchemaDataset
 from .moviechat import MovieChatDataset
 from .nextqa import NextMCDataset, NextOEDataset
-
+from .videomme import VideoMMEDataset
 
 def build_dataset(dataset_config, name, is_training=False):
     if isinstance(dataset_config, (Path, str)):

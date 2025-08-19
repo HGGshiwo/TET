@@ -69,6 +69,11 @@ def load_data(path):
         return json.load(path.open(encoding="utf-8"))
     elif path.suffix == ".yml":
         return yaml.safe_load(path.open(encoding="utf-8"))
+    elif path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+        table = pq.read_table(path)
+        df = table.to_pandas()
+        return df.to_dict(orient='records')
     elif path.suffix == ".jsonl":
         out = {}
         for value in jsonlines.open(path, "r"):
