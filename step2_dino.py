@@ -171,5 +171,5 @@ if __name__ == "__main__":
     runner.processor = processor
     runner.box_threshold = box_threshold
     runner.text_threshold = text_threshold
-    model_class = lambda: AutoModelForZeroShotObjectDetection.from_pretrained(model_id)
+    model_class = partial(AutoModelForZeroShotObjectDetection.from_pretrained, model_id)
     runner(model_class=model_class, gpu_ids=[0])

@@ -4,6 +4,7 @@ import decord
 import asyncio
 import multiprocessing as mp
 mp.set_start_method('spawn', force=True) # for linux
+from functools import partial
 from utils import redirect_stdout
 
 decord.bridge.set_bridge("torch")
@@ -202,7 +203,8 @@ class MultiGPURunner(Runner):
         self.result_queue = manager.Queue()
 
         # 1. 任务入队
-        iter_func = lambda: self.frame_iter(True) if self.iter_frame else self.data_iter
+        # iter_func = lambda: self.frame_iter(True) if self.iter_frame else self.data_iter
+        iter_func = partial(self.frame_iter, True) if self.iter_frame else self.data_iter
         total = 0
         for data in iter_func():
             self.task_queue.put(data)
