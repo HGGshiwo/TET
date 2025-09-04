@@ -443,6 +443,28 @@ def get_frame(video_path, fps: int, return_idx=False):
         return video, idx
     return video  # (C, H, W)
 
+def get_frame_by_idx(video_path, idx, fps=1):
+    vr = decord.VideoReader(str(video_path))
+    origin_fps = vr.get_avg_fps()
+    ratio = origin_fps / fps
+    origin_idx = list(range(0, len(vr), int(ratio)))
+    if origin_idx[-1] != len(vr) - 1:
+        origin_idx.append(len(vr) - 1)
+    idx = [origin_idx[i] for i in idx]
+    video = vr.get_batch(idx)
+    video = video.cpu().numpy()
+    video = [Image.fromarray(v) for v in video]
+    return video  # (C, H, W)
+
+def get_video_size(video_path, fps=1):
+    vr = decord.VideoReader(str(video_path))
+    origin_fps = vr.get_avg_fps()
+    ratio = origin_fps / fps
+    origin_idx = list(range(0, len(vr), int(ratio)))
+    if origin_idx[-1] != len(vr) - 1:
+        origin_idx.append(len(vr) - 1)
+    return len(origin_idx)
+
 class LazyFrameLoader:
     @classmethod
     def create(cls, video_path, fps, batch_size=1):
@@ -582,6 +604,7 @@ image_split = {
 #     return out
 
 def make_grid(image_list, max_frame=8, pad_width=10):
+    assert len(image_list) <= max_frame, "Image list length exceeds max_frame"
     assert max_frame <= 49, "max_frame should be less than 49"
     if len(image_list) > max_frame:
         idx = np.linspace(0, len(image_list) - 1, max_frame).astype(int)

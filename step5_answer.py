@@ -8,6 +8,8 @@ from utils import (
     get_frame,
     make_grid,
     annote_frame_idx,
+    get_frame_by_idx,
+    get_video_size
 )
 from pathlib import Path
 import numpy as np
@@ -32,8 +34,8 @@ async def frame_select(runner, **data):
     qid = data["qid"]
     video_path = runner.dataset.config.video_path
     video_path = Path(video_path).joinpath(data["video_path"])
-    frames = get_frame(video_path, 1)
-    last = len(frames)
+    video_size = get_video_size(video_path, 1)
+    last = video_size
     
     if data["qid"] not in select_data2:    
         valid = np.linspace(0, last - 1, max_frame).astype(int).tolist()
@@ -41,7 +43,9 @@ async def frame_select(runner, **data):
     else:
         valid = select_data2[data["qid"]]["relevant_idx"]
         valid = [v for v in valid if v < last and v >= 0]
-
+    if len(valid) > max_frame:
+        valid_idx = np.linspace(0, len(valid) - 1, max_frame).astype(int).tolist()
+        valid = [valid[i] for i in valid_idx]
     if uniform_sample:
         frame_num = len(valid)
         if uniform_target == "both":    
@@ -60,10 +64,10 @@ async def frame_select(runner, **data):
     image = None
     boxes = []
     
-    def processor(i):
+    def processor(frame, i):
         assert not (use_crop or use_anno), "use_crop and use_anno cannot be both True"
         assert not (use_crop and use_cont), "use_crop and use_cont cannot be both True"
-        img = frames[valid[i]]
+        img = frame
         if use_crop:
             img = crop_img(img, boxes[i])
         if add_frame_idx:
@@ -91,7 +95,8 @@ async def frame_select(runner, **data):
                 boxes.append(results[str(i)]["boxes"])
         if len(invalid_idx) > 0:
             print(f"Warning: {invalid_idx} not in {qid}, using empty boxes")
-    frames = [processor(i) for i in range(len(valid))]
+    frames = get_frame_by_idx(video_path, valid)
+    frames = [processor(frame, i) for i, frame in enumerate(frames)]
     image = make_grid(frames, max_frame)
     if save_img:
         save_dir = Path(output_path.replace(".jsonl", "_image"))
@@ -118,9 +123,13 @@ async def frame_select(runner, **data):
             out = None
             print("model output is None")
         else:
-            out["qid"] = qid
-            out["prompt"] = prompt
-            out["raw"] = out_raw
+            out = {
+                **out,
+                "qid": qid,
+                "prompt": prompt,
+                "raw": out_raw,
+                "input_idx": valid
+            }
             if "truth" in data:
                 out["truth"] = data["truth"]
     except Exception as e:

@@ -2,7 +2,7 @@ from runner import AsyncRunner
 import json
 import asyncio
 from utils import load_data
-from utils import create_model, get_frame, make_grid, annote_frame_idx
+from utils import create_model, get_frame_by_idx, make_grid, annote_frame_idx, get_video_size
 from pathlib import Path
 import numpy as np
 from utils import crop_img, parse_json, parse_list
@@ -25,19 +25,22 @@ async def frame_select(runner, **data):
     qid = data["qid"]
     video_path = runner.dataset.config.video_path
     video_path = Path(video_path).joinpath(data["video_path"])
-    frames = get_frame(video_path, 1)
+    video_size = get_video_size(video_path, 1)
     boxes = []
+    last = video_size
     if qid not in results_data or data["qid"] not in select_data:
         print(f"Warning: {qid} not in results or select_data, using {max_frame} frames")
-        valid = np.linspace(0, len(frames) - 1, max_frame).astype(int).tolist()
+        valid = np.linspace(0, video_size - 1, max_frame).astype(int).tolist()
         valid = sorted(set(valid))
-        results = {}
-        last = len(frames) 
+        results = {}    
     else:
         results = results_data[qid]["results"]  
         valid = select_data[data["qid"]]["relevant_idx"]
-        valid = [v for v in valid if v >= 0 and v < len(frames)]
-        last = results_data[data["qid"]]["last"]
+        valid = [v for v in valid if v >= 0 and v < video_size]
+        if len(valid) > max_frame:
+            valid_idx = np.linspace(0, len(valid) - 1, max_frame).astype(int).tolist()
+            valid = [valid[i] for i in valid_idx]
+        # last = results_data[data["qid"]]["last"]
     if uniform_sample:
         valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
         valid = sorted(set(valid))
@@ -50,17 +53,18 @@ async def frame_select(runner, **data):
         else:
             boxes.append(results[str(i)]["boxes"])
 
+    frames = get_frame_by_idx(video_path, valid)
     if use_crop and add_frame_idx:
         images = [
             annote_frame_idx(crop_img(frames[v], boxes[i]), v)
             for i, v in enumerate(valid)
         ]
     elif add_frame_idx:
-        images = [annote_frame_idx(frames[v], v) for i, v in enumerate(valid)]
+        images = [annote_frame_idx(frame, v) for frame, v in zip(frames, valid)]
     elif use_crop:
-        images = [crop_img(frames[v], boxes[i]) for i, v in enumerate(valid)]
+        images = [crop_img(frame, box) for frame, box in zip(frames, boxes)]
     else:
-        images = [frames[v] for i, v in enumerate(valid)]
+        images = [frame for frame in frames]
     image = make_grid(images, max_frame=max_frame)
     relevant_idx = []
     try:
@@ -93,6 +97,7 @@ async def frame_select(runner, **data):
         **parsed,
         "prompt": prompt,
         "invalid": invalid,
+        "input_idx": valid
     }
 
 
