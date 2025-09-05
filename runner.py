@@ -105,12 +105,13 @@ class Runner:
         data_iter = (
             self.dataset.get_video_info() if self.iter_key == "vid" else self.dataset
         )
-        bar = None if not use_tqdm else tqdm(total=len(self.dataset), desc="Generating frames")
+        bar = None if not use_tqdm else tqdm(total=len(data_iter), desc="Generating frames")
         for data in data_iter:
-            _video_path = Path(video_path).joinpath(data["video_path"])
-            batch_loader = LazyFrameLoader.create(_video_path, self.video_fps, self.batch_size)
-            for d in batch_loader:
-                yield {"frame": d, **data.copy()}
+            if data[self.iter_key] not in self.processed:
+                _video_path = Path(video_path).joinpath(data["video_path"])
+                batch_loader = LazyFrameLoader.create(_video_path, self.video_fps, self.batch_size)
+                for d in batch_loader:
+                    yield {"frame": d, **data.copy()}
             if bar is not None:
                 bar.update(1)
         if bar is not None:

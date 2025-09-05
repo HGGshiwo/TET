@@ -210,7 +210,6 @@ if __name__ == "__main__":
         "dataset": dataset_name,
         "video_fps": 1,
         "iter_key": "qid",
-        "single_obj": cfg["single_obj"],
         "question_only": question_only,
         "detect_data": detect_data,
     }
@@ -239,6 +238,7 @@ if __name__ == "__main__":
             "processor": processor,
             "box_threshold": box_threshold,
             "text_threshold": text_threshold,
+            "single_obj": cfg["single_obj"],
         }
         kwargs.update(new_kwargs)
         model_class = partial(
