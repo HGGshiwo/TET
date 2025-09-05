@@ -1,6 +1,6 @@
 from runner import AsyncRunner
 import numpy as np
-from utils import load_data, load_data, save_data
+from utils import load_data, load_data, save_data, load_jsonl2dict
 import torch
 from utils import parse_json, create_model, parse_list, print_cfg
 import asyncio
@@ -30,10 +30,11 @@ def make_exist_table(pred_obj, results):
     )
     for i, result in results.items():
         i = int(i)
-        if single_obj:
-            labels = result.keys()
+        if use_dino:
+            labels = result.keys() if single_obj else result["labels"]
         else:
-            labels = result["labels"]
+            labels = result["out"]
+        
         for label in labels:
             try:
                 idx = pred_obj.index(label.lower())
@@ -82,8 +83,12 @@ async def frame_select(runner, **data):
                 pred_obj = pred["question"]
             else:
                 pred_obj = [obj for objs in pred.values() for obj in objs]
-        last = input_data[data["qid"]]["last"]
-        results = input_data[data["qid"]]["results"]
+        if use_dino:
+            last = input_data[data["qid"]]["last"]
+            results = input_data[data["qid"]]["results"]
+        else:
+            last = len(input_data[data["qid"]]) + 1
+            results = input_data[data["qid"]]
         relevant_idx = []
         exist_table = make_exist_table(pred_obj, results)
         parsed = {}
@@ -134,14 +139,17 @@ if __name__ == "__main__":
     dino_cfg = load_data(cfg["dino"])
     obj_cfg = load_data(dino_cfg["obj"])
     model_name = cfg["model_name"]
-    question_only = cfg.get("question_only", True)
-    
+    use_dino = "qwen" not in dino_cfg["model_path"].lower()
     dataset_name = obj_cfg["dataset_name"]
-    single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
+    question_only = cfg.get("question_only", True)
+
+    if use_dino:
+        single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
+        load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
+    else:
+        input_data = load_jsonl2dict(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl") 
     prompt_version = cfg.get("prompt_version", "v1")
     detect_data = load_data(f"./outputs/{obj_cfg['exp_name']}/obj.jsonl")
-    input_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
-
     exp_name = cfg.get("exp_name")
     if exp_name is None:
         exp_name = dino_cfg.get("exp_name")
@@ -167,7 +175,9 @@ if __name__ == "__main__":
         if item["qid"] not in input_data:
             print(f"Warning: {item['qid']} not in input data")
             continue
-        results = input_data[item["qid"]]["results"]
+        results = input_data[item["qid"]]
+        if use_dino:
+            results = results["results"]
         total += 1
         if item["qid"] not in out_data:
             print(f"Warning: {item['qid']} not in output data")

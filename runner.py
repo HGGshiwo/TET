@@ -26,8 +26,12 @@ class Runner:
         dataset_config="./configs/dataset.yml",
         iter_callback=None,
         batch_size=1,
-        max_workers=16
+        max_workers=16,
+        **kwargs
     ):
+        for k, v in kwargs.items():
+            assert not hasattr(self, k), f"{k} already exists"
+            setattr(self, k, v)
         self.max_workers = max_workers
         self.dataset = build_dataset(dataset_config, dataset, is_training=False)
         # output_path = f"./outputs/{exp_name}/nextqa.jsonl"

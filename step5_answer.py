@@ -62,41 +62,9 @@ async def frame_select(runner, **data):
             raise ValueError("uniform_target must be one of 'both', 'step1', 'step2'")
 
     image = None
-    boxes = []
-    
-    def processor(frame, i):
-        assert not (use_crop or use_anno), "use_crop and use_anno cannot be both True"
-        assert not (use_crop and use_cont), "use_crop and use_cont cannot be both True"
-        img = frame
-        if use_crop:
-            img = crop_img(img, boxes[i])
-        if add_frame_idx:
-            img = annote_frame_idx(img, valid[i])
-        if use_anno:
-            img = annote_box(img, boxes[i])
-        if use_cont:
-            if i % 2 == 0:
-                img = frames[valid[i]]
-            else:
-                img = crop_img(frames[valid[i]], boxes[i])
-        return img
-    
-    if (use_crop or use_anno or use_cont):
-        invalid_idx = []
-        results = results_data[qid]["results"] if qid in results_data else {}
-        for i in valid:
-            if str(i) not in results:
-                boxes.append([])
-                invalid_idx.append(i)
-                continue
-            if single_obj:
-                boxes.append([b for v in results[str(i)].values() for v2 in v for b in v2["boxes"]])
-            else:
-                boxes.append(results[str(i)]["boxes"])
-        if len(invalid_idx) > 0:
-            print(f"Warning: {invalid_idx} not in {qid}, using empty boxes")
     frames = get_frame_by_idx(video_path, valid)
-    frames = [processor(frame, i) for i, frame in enumerate(frames)]
+    if add_frame_idx:
+        frames = [annote_frame_idx(frame, v) for frame, v in zip(frames, valid)]
     image = make_grid(frames, max_frame)
     if save_img:
         save_dir = Path(output_path.replace(".jsonl", "_image"))
@@ -148,7 +116,6 @@ if __name__ == "__main__":
     dino_cfg = load_data(select_cfg["dino"])
     obj_cfg = load_data(dino_cfg["obj"])
 
-    single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
     dataset_name = obj_cfg["dataset_name"]
     uniform_sample = cfg["uniform_sample"]  # 是否均匀采样
     if uniform_sample:
