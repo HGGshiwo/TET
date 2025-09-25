@@ -5,7 +5,6 @@ from utils import load_data, send_post_request
 from utils import (
     parse_json,
     create_model,
-    get_frame,
     make_grid,
     annote_frame_idx,
     get_frame_by_idx,
@@ -13,7 +12,7 @@ from utils import (
 )
 from pathlib import Path
 import numpy as np
-from utils import crop_img, annote_box
+from utils import chunk
 from utils import save_data, print_cfg
 example = {
     "answer": "A",
@@ -57,19 +56,24 @@ async def frame_select(runner, **data):
             select1_valid = select_data1[data["qid"]]["relevant_idx"]
             valid_idx = np.linspace(0, len(select1_valid) - 1, frame_num).astype(int).tolist()
             valid_idx = sorted(set(valid_idx))
-            valid = [select1_valid[i] for i in valid_idx]
+            valid = [select1_valid[i] for i in valid_idx if select1_valid[i] >= 0 and select1_valid[i] < last]
         else:
             raise ValueError("uniform_target must be one of 'both', 'step1', 'step2'")
 
     image = None
     frames = get_frame_by_idx(video_path, valid)
+    
+    save_dir = Path(output_path.replace(".jsonl", "_image"))
+    save_dir.mkdir(parents=True, exist_ok=True)
+        
     if add_frame_idx:
         frames = [annote_frame_idx(frame, v) for frame, v in zip(frames, valid)]
-    image = make_grid(frames, max_frame)
-    if save_img:
-        save_dir = Path(output_path.replace(".jsonl", "_image"))
-        save_dir.mkdir(parents=True, exist_ok=True)
-        image.save(str(save_dir.joinpath(f"{qid}.jpg")))
+    images = []
+    for i, chunk_img in enumerate(chunk(frames, frame_per_img)):
+        image = make_grid(chunk_img, frame_per_img)
+        images.append(image)
+        if save_img:
+            image.save(str(save_dir.joinpath(f"{qid}chunk{i}.jpg")))
     if use_anno:
         prompt = PROMPT1_anno
     elif use_cont:
@@ -83,9 +87,8 @@ async def frame_select(runner, **data):
     if use_cot:
         prompt = f"NOTE: you should think step by step before give the final answer.\n{prompt}"
     try:
-        out = await model.forward(prompt, image)
+        out = await model.forward(prompt, images)
         assert out is not None, "model output is None"
-        out_raw = out
         out = parse_json(out)
         if not out:
             out = None
@@ -95,7 +98,6 @@ async def frame_select(runner, **data):
                 **out,
                 "qid": qid,
                 "prompt": prompt,
-                "raw": out_raw,
                 "input_idx": valid
             }
             if "truth" in data:
@@ -133,6 +135,7 @@ if __name__ == "__main__":
     ), "use_crop and use_anno and use_cont cannot be both True"
 
     max_frame = cfg["max_frame"]
+    frame_per_img = cfg["frame_per_img"]
     model_name = cfg["model_name"]
 
     results_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")

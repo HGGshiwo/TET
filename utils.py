@@ -311,11 +311,15 @@ class APIModel:
             self.client = AsyncOpenAI()
         self.model_name = model_name
 
-    async def forward(self, user_text, frame=None):
+    async def forward(self, user_text, frames=None):
         content = [{"type": "text", "text": user_text}]
-        if frame is not None:
-            img = image2base64(frame)
-            content.append({"type": "image_url", "image_url": {"url": img}})
+        if frames is not None:
+            if not isinstance(frames, list):
+                frames = [frames]
+            for frame in frames:
+                img = image2base64(frame)
+                content.append({"type": "image_url", "image_url": {"url": img}})
+        
         out = await self.client.chat.completions.create(
             model=self.model_name,
             messages=[{"role": "user", "content": content}],
@@ -371,6 +375,10 @@ def list2dict(path, level=1):
 #             return None
 #     return pred
 
+def remove_json_comments(s):
+    # 去除 // 后面的内容
+    return re.sub(r'//.*', '', s)
+
 def parse_json(pred, list=False):
     _raw = pred
     pred = pred.split("```json")[-1].split("```")[0]
@@ -382,6 +390,7 @@ def parse_json(pred, list=False):
             end = "}" if not list else "]"
             pred = pred.split(start)[1].split(end)[0]
             pred = start + pred + end
+            pred = remove_json_comments(pred)
             # pred = pred.replace("'", '"').replace("‘", '"').replace("’", '"')
             pred = json.loads(pred)
         except Exception as e:
@@ -392,6 +401,13 @@ def parse_json(pred, list=False):
                     return pred
                 except Exception as e2:
                     e = e2
+            else:
+                try:
+                    pred = pred.replace("\n", "").replace(",}", "}")
+                    pred = json.loads(pred)
+                    return pred
+                except Exception as e2:
+                    pass
             print(f"Error parsing JSON: {_raw}")
             # return {} if not list else []
             return None

@@ -37,7 +37,7 @@ def make_exist_table(pred_obj, results):
         
         for label in labels:
             try:
-                idx = pred_obj.index(label.lower())
+                idx = pred_obj.index(label.strip("'").lower())
             except ValueError:
                 idx = -1
                 for j, obj in enumerate(pred_obj):
@@ -83,6 +83,7 @@ async def frame_select(runner, **data):
                 pred_obj = pred["question"]
             else:
                 pred_obj = [obj for objs in pred.values() for obj in objs]
+        pred_obj = list(set(pred_obj))
         if use_dino:
             last = input_data[data["qid"]]["last"]
             results = input_data[data["qid"]]["results"]
