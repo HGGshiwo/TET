@@ -459,6 +459,19 @@ def get_frame(video_path, fps: int, return_idx=False):
         return video, idx
     return video  # (C, H, W)
 
+def resize_image(img, width=640, height=480):
+    w, h = img.size
+
+    scale_w = width / w
+    scale_h = height / h
+    scale = min(scale_w, scale_h, 1.0)  # 只缩小，不放大
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+    return img_resized
+    
 def get_frame_by_idx(video_path, idx, fps=1):
     vr = decord.VideoReader(str(video_path))
     origin_fps = vr.get_avg_fps()
@@ -470,6 +483,7 @@ def get_frame_by_idx(video_path, idx, fps=1):
     video = vr.get_batch(idx)
     video = video.cpu().numpy()
     video = [Image.fromarray(v) for v in video]
+    video = [resize_image(m) for m in video]
     return video  # (C, H, W)
 
 def get_video_size(video_path, fps=1):
