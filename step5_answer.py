@@ -62,7 +62,6 @@ async def frame_select(runner, **data):
 
     image = None
     frames = get_frame_by_idx(video_path, valid)
-    
     save_dir = Path(output_path.replace(".jsonl", "_image"))
     save_dir.mkdir(parents=True, exist_ok=True)
         
@@ -111,7 +110,7 @@ async def frame_select(runner, **data):
 
 
 if __name__ == "__main__":
-
+    _avg_frame = []
     cfg = load_data("./configs/answer.yml")
     select2_cfg = load_data(cfg["select2"])
     select_cfg = load_data(select2_cfg["select"])
@@ -187,6 +186,8 @@ if __name__ == "__main__":
                 answers[item["qid"]] = 0
         else:
             out = compute_metrics(pred[answer_key], item, True)
+        if "input_idx" in pred:
+            _avg_frame.append(len(pred["input_idx"]))
     if not is_egoschema_full:
         failed = out.pop("failed")
         failed_path = output_path.replace(".jsonl", ".txt")
@@ -201,3 +202,5 @@ if __name__ == "__main__":
             print(f"Response Content:\n{response.text}")
         except Exception as e:
             print(f"Error sending POST request: {e}")
+    if len(_avg_frame) != 0:
+        print(f"avg frames: {np.mean(_avg_frame)}")
