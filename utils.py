@@ -483,7 +483,7 @@ def get_frame_by_idx(video_path, idx, fps=1):
     video = vr.get_batch(idx)
     video = video.cpu().numpy()
     video = [Image.fromarray(v) for v in video]
-    video = [resize_image(m) for m in video]
+    # video = [resize_image(m) for m in video] # only valid for videomme-long
     return video  # (C, H, W)
 
 def get_video_size(video_path, fps=1):

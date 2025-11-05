@@ -64,7 +64,7 @@ async def frame_select(runner, **data):
     frames = get_frame_by_idx(video_path, valid)
     save_dir = Path(output_path.replace(".jsonl", "_image"))
     save_dir.mkdir(parents=True, exist_ok=True)
-        
+       
     if add_frame_idx:
         frames = [annote_frame_idx(frame, v) for frame, v in zip(frames, valid)]
     images = []
@@ -128,6 +128,7 @@ if __name__ == "__main__":
     use_cot = cfg.get("use_cot", False)  # 是否使用链式推理
     add_frame_idx = cfg["add_frame_idx"]
     save_img = cfg.get("save_img", False)  # 是否保存图片
+    avg_frame = []
     
     assert not (
         use_crop and use_anno and use_cont

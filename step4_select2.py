@@ -146,13 +146,21 @@ if __name__ == "__main__":
     model = create_model("api", model_name)
 
     last_data_path = f"./outputs/{select_cfg['exp_name']}/select.jsonl"
+    
+    output_path_list = []
+    select_data_list = [f"./outputs/{select_cfg['exp_name']}/select.jsonl"]
     for i in range(iter_num):
-        print(f"Select frame round: [{i + 1}/{iter_num}]")
         output_path = f"./outputs/{exp_name}/select2.jsonl"
         if i != iter_num - 1:
             output_path = output_path.replace(".jsonl", f"_{i+1}.jsonl")
-        select_data = load_data(last_data_path)
-        last_data_path = output_path
+        output_path_list.append(output_path)
+        if i != iter_num - 1:
+            select_data_list.append(output_path)
+            
+    for i in range(iter_num):
+        print(f"Select frame round: [{i + 1}/{iter_num}]")
+        output_path = output_path_list[i]
+        select_data = load_data(select_data_list[i])
         runner = AsyncRunner(
             frame_select,
             output_path,
@@ -163,29 +171,40 @@ if __name__ == "__main__":
         uniform_sample = False # 只对第一步进行消融
         asyncio.run(runner())
         max_frame = max_frame // 2
-    compress_rate = []
-    valid_rate = []
-    frame_num = []
-
-    out = load_data(output_path)
-    for item in runner.dataset:
-        if item["qid"] not in out:
-            print(f"Warning: {item['qid']} not in output data")
-            continue
-        if item["qid"] not in select_data:
-            print(f"Warning: {item['qid']} not in select data")
-            continue
-        out_item = out[item["qid"]]
-        if out_item["invalid"]:
-            valid_rate.append(0)
-        else:
-            valid_rate.append(1)
-            rate = len(out_item["relevant_idx"]) / len(
-                select_data[item["qid"]]["relevant_idx"]
-            )
-            compress_rate.append(rate)
-            frame_num.append(len(out_item["relevant_idx"]))
-
-    print(f"compress rate: {np.mean(compress_rate)*100:.2f}%")
-    print(f"avg frames: {np.mean(frame_num):.2f}")
-    print(f"valid: {np.mean(valid_rate):.2f}({sum(valid_rate)}/{len(valid_rate)})")
+    
+    compress_rates = [[] for _ in range(iter_num)]
+    valid_rates = [[] for _ in range(iter_num)]
+    frame_nums = [[] for _ in range(iter_num)]
+    outs = [load_data(output_path) for output_path in output_path_list]
+    select_datas = [load_data(select_data_list[0])] + outs[:-1]
+    for i in range(iter_num):    
+        out = outs[i]
+        select_data = select_datas[i]
+        compress_rate = compress_rates[i]
+        valid_rate = valid_rates[i]
+        frame_num = frame_nums[i]
+        for item in runner.dataset:
+            if item["qid"] not in out:
+                print(f"Warning: {item['qid']} not in output data")
+                continue
+            if item["qid"] not in select_data:
+                print(f"Warning: {item['qid']} not in select data")
+                continue
+            out_item = out[item["qid"]]
+            if out_item["invalid"]:
+                valid_rate.append(0)
+            else:
+                valid_rate.append(1)
+                rate = len(out_item["relevant_idx"]) / len(
+                    select_data[item["qid"]]["relevant_idx"]
+                )
+                compress_rate.append(rate)
+                frame_num.append(len(out_item["relevant_idx"]))
+    for i in range(iter_num):
+        compress_rate = compress_rates[i]
+        frame_num = frame_nums[i]
+        valid_rate = valid_rates[i]
+        print(f"Iter {i+1}:")
+        print(f"compress rate: {np.mean(compress_rate)*100:.2f}%")
+        print(f"avg frames: {np.mean(frame_num):.2f}")
+        print(f"valid: {np.mean(valid_rate):.2f}({sum(valid_rate)}/{len(valid_rate)})")
