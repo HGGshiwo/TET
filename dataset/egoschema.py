@@ -16,7 +16,8 @@ class EgoSchemaDataset(BaseDataset):
         if self.split == "subset":
             json_data = load_data(self.config.subset_path)
             subset_names_list = list(json_data.keys())
-            
+        elif self.split != "full":
+            raise ValueError(f"Unknow split: {self.split}, must in [subset, full]")
         data = []
         for item in self.anno:
             qid = item["q_uid"]

@@ -146,7 +146,7 @@ if __name__ == "__main__":
 
     if use_dino:
         single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
-        load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
+        input_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
     else:
         input_data = load_jsonl2dict(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl") 
     prompt_version = cfg.get("prompt_version", "v1")

@@ -1,0 +1,165 @@
+from runner import AsyncRunner
+import json
+import asyncio
+from utils import load_data, send_post_request
+from utils import (
+    parse_json,
+    create_model,
+    make_grid,
+    annote_frame_idx,
+    get_frame_by_idx,
+    get_video_size
+)
+from pathlib import Path
+import numpy as np
+from utils import chunk
+from utils import save_data, print_cfg
+example = {
+    "answer": "A",
+    "explain": "put your explaination here",
+    "confidence": 3,
+}
+
+PROMPT1 = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_anno = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The important areas related to the question in the frame are enclosed by red boxes. You should pay special attention to these parts. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_cont = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The frames in each row increase in time from left to right, and the first frame of the next row follows immediately after the last frame of the previous row. Each frame is also shown with an additional image on its right side, which is a zoomed-in and cropped version highlighting a key object extracted from that frame. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+PROMPT1_frame_idx = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The upper left corner of each frame indicates the current frame number and the total number of frames is [frame_num]. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Output example: {json.dumps(example)}"
+
+
+async def frame_select(runner, **data):
+    qid = data["qid"]
+    video_path = runner.dataset.config.video_path
+    video_path = Path(video_path).joinpath(data["video_path"])
+    video_size = get_video_size(video_path, 1)
+    last = video_size
+    
+    valid = tree_data[qid]
+
+    image = None
+    frames = get_frame_by_idx(video_path, valid)
+    save_dir = Path(output_path.replace(".jsonl", "_image"))
+    save_dir.mkdir(parents=True, exist_ok=True)
+       
+    if add_frame_idx:
+        frames = [annote_frame_idx(frame, v) for frame, v in zip(frames, valid)]
+    images = []
+    for i, chunk_img in enumerate(chunk(frames, frame_per_img)):
+        image = make_grid(chunk_img, frame_per_img)
+        images.append(image)
+        if save_img:
+            image.save(str(save_dir.joinpath(f"{qid}chunk{i}.jpg")))
+    
+    if add_frame_idx:
+        prompt = PROMPT1_frame_idx.replace("[frame_num]", str(last))
+    else:
+        prompt = PROMPT1
+    question = data["question"]
+    prompt = prompt.replace("[question]", question)
+    if use_cot:
+        prompt = f"NOTE: you should think step by step before give the final answer.\n{prompt}"
+    try:
+        out = await model.forward(prompt, images)
+        assert out is not None, "model output is None"
+        out = parse_json(out)
+        if not out:
+            out = None
+            print("model output is None")
+        else:
+            out = {
+                **out,
+                "qid": qid,
+                "prompt": prompt,
+                "input_idx": valid
+            }
+            if "truth" in data:
+                out["truth"] = data["truth"]
+    except Exception as e:
+        import traceback
+        print(f"Error processing qid {qid}: {e}")
+        traceback.print_exc()
+        out = None
+    return out
+
+
+if __name__ == "__main__":
+    _avg_frame = []
+    cfg = load_data("./configs/answer.yml")
+
+    dataset_name = "egoschema_subset"
+
+    use_cot = True #cfg.get("use_cot", False)  # 是否使用链式推理
+    add_frame_idx = True #cfg["add_frame_idx"]
+    save_img = False #cfg.get("save_img", False)  # 是否保存图片
+    avg_frame = []
+    
+
+    max_frame = cfg["max_frame"]
+    frame_per_img = cfg["frame_per_img"]
+    model_name = cfg["model_name"]
+
+
+    exp_name = "test_merge"
+    cfg["exp_name"] = exp_name
+
+    output_path = f"./outputs/{exp_name}/answer.jsonl"
+    save_data(cfg, f"./outputs/{exp_name}/answer.yml")
+    print_cfg(cfg)
+
+    tree_data = load_data(r"D:\work\实时对话\VideoTree\results\depth_expansion_res.json")
+    tree_data = {item['name']: item['sorted_values'] for item in tree_data}
+    select_data2 = load_data(f"./outputs/qwenvl_test3/select2.jsonl")
+    for key in tree_data:
+        if key not in select_data2:
+            continue
+        tree_data[key] = sorted(set(tree_data[key] + select_data2[key]["relevant_idx"]))
+    model = create_model("api", model_name)
+
+    runner = AsyncRunner(
+        frame_select,
+        output_path,
+        iter_key="qid",
+        dataset=dataset_name,
+    )
+    asyncio.run(runner())
+
+    # compute metrics
+    result = load_data(output_path)
+    compute_metrics = runner.dataset.get_compute_metrics2()
+    total, difficult = 0, 0
+    answers = {}
+    options = ["A", "B", "C", "D", "E"]
+    name, split = dataset_name.split("_") 
+    is_egoschema_full = name == "egoschema" and "full" in split
+    for item in runner.dataset:
+        total += 1
+        pred = {"answer": "A"} if item["qid"] not in result else result[item["qid"]]
+        answer_key = "pred" if "pred" in pred else "answer"
+        if is_egoschema_full:
+            try:
+                answers[item["qid"]] = options.index(pred[answer_key])
+            except ValueError:
+                print(f"Warning: {item['qid']} has invalid answer {pred[answer_key]}")
+                answers[item["qid"]] = 0
+        else:
+            out = compute_metrics(pred[answer_key], item, True)
+        if "input_idx" in pred:
+            _avg_frame.append(len(pred["input_idx"]))
+    if not is_egoschema_full:
+        failed = out.pop("failed")
+        failed_path = output_path.replace(".jsonl", ".txt")
+        Path(failed_path).write_text("\n".join(failed))
+        print(out)
+    elif len(answers) == 5031:
+        answer_path = output_path.replace(".jsonl", ".json")
+        Path(answer_path).write_text(json.dumps(answers, indent=4, ensure_ascii=False))
+        try:
+            response = send_post_request(answer_path)
+            print(f"Response Status Code: {response.status_code}")
+            print(f"Response Content:\n{response.text}")
+        except Exception as e:
+            print(f"Error sending POST request: {e}")
+    if len(_avg_frame) != 0:
+        print(f"avg frames: {np.mean(_avg_frame)}")
