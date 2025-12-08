@@ -52,3 +52,39 @@ def _read_video_decord(
 
 VIDEO_READER_BACKENDS["decord"] = _read_video_decord
 from qwen_vl_utils import process_vision_info
+
+
+def compress_consecutive_numbers(nums):
+    """
+    将数字列表中连续的数字转换为起始-结束的格式
+    
+    参数:
+        nums: 数字列表，要求已排序
+    
+    返回:
+        转换后的字符串
+    """
+    if not nums:  # 处理空列表
+        return ""
+    nums = sorted(nums)
+    result = []
+    start = nums[0]
+    end = nums[0]
+    
+    for i in range(1, len(nums)):
+        if nums[i] == end + 1:  # 数字连续
+            end = nums[i]
+        else:  # 数字不连续，记录前一段
+            if start == end:  # 单个数字
+                result.append(str(start))
+            else:  # 连续数字段
+                result.append(f"{start}-{end}")
+            start = end = nums[i]
+    
+    # 处理最后一段
+    if start == end:
+        result.append(str(start))
+    else:
+        result.append(f"{start}-{end}")
+    
+    return ",".join(result)

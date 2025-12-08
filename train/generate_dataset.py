@@ -11,17 +11,15 @@ from tqdm import tqdm
 from datasets import Dataset
 from trl.trainer.utils import remove_none_values
 import re
+from train_utils import compress_consecutive_numbers
 
 PROMPT = """
-Based on the video, answer the following question: {question}, please follow the blew structure precisely:
-keyframe: [e.g., 125, 250, 375]
-reason: [Provide a concise step-by-step analysis based on the visual information in the specified keyframes.]
-answer: [A/B/C/D/E]
-"""
-ANSWER = """
-keyframe: {input_idx}
-reason: {explain}
-answer: {truth} 
+Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON in the following format. You can use "start_index-end_index" as a shorthand for keyframes. Do not add comments:
+{{
+    "keyframe": "keyframe related to the question, e.g. 1-90, 183, 185",
+    "reason": "Provide a concise step-by-step analysis based on the visual information in the specified keyframes",
+    "answer": "one of A/B/C/D/E"
+}}
 """
 
 
@@ -31,6 +29,8 @@ def format_data(sample, fps=1, test=False):
     """
     assert fps <= 1, "fps must <= 1"
     input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
+    keyframe = compress_consecutive_numbers(input_index)
+    answer = {"reason": sample["explain"], "keyrfame": keyframe, "answer": sample["truth"]}
     message = [
         {
             "role": "user",
@@ -56,11 +56,7 @@ def format_data(sample, fps=1, test=False):
                 "content": [
                     {
                         "type": "text",
-                        "text": ANSWER.format(
-                            input_idx=input_index,
-                            explain=sample["explain"],
-                            truth=sample["truth"],
-                        ),
+                        "text": json.dumps(answer),
                     }
                 ],
             }
@@ -105,37 +101,13 @@ def generate_dataset(dataset_name, answer_path):
 
 
 def format_output(output):
-    out = {}
-
-    def filter(start):
-
-        # 正则表达式匹配
-        pattern = rf"{start}:\s*(.*?)(\n|$)"
-
-        # 搜索匹配
-        match = re.search(pattern, output)
-        if match:
-            return match.group(1)
-        else:
-            return ""
-
-    for s, out_key in zip(
-        ["Keyframe positions", "Reasoning", "The answer is"],
-        ["index", "explain", "answer"],
-    ):
-        value = filter(
-            s + ":",
-        )
-        if s == "Keyframe positions":
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError as e:
-                value = []
-        elif s == "The answer is":
-            match = re.search(r"[ABCDE]", value)
-            if match:
-                value = match.group()
-            else:
-                value = "A"
-        out[out_key] = value
+    try:
+        out = json.loads(output)
+    except json.JSONDecodeError:
+        try:
+            out = output.split("{")[1].split("}")[0]
+            out = json.loads(f"{{{out}}}")
+        except Exception as e:
+            print(f"failed to decode json: {output}")
+            out = None
     return out

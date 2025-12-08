@@ -13,9 +13,10 @@ from tqdm import tqdm
 
 dataset_name = "egoschema_subset"
 # Model and processor setup
-model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft2"
+model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft"
 ANSWER_PATH = r"D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl"
 OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft_eval"
+TEST_SFT = True
 batch_size = 4
 
 train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_name, ANSWER_PATH)
@@ -35,7 +36,8 @@ model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     torch_dtype=torch.bfloat16,
     quantization_config=bnb_config,
 )
-model = PeftModel.from_pretrained(model, model_id)
+if TEST_SFT:
+    model = PeftModel.from_pretrained(model, model_id)
 processor = AutoProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
 processor.tokenizer.padding_side = 'left'
@@ -53,13 +55,6 @@ for batch_idx, batch_data in enumerate(tqdm(test_dataset_batched)):
                 msg, tokenize=False, add_generation_prompt=True
             )
             for msg in batch_data["message"]
-        ]
-
-        # Ensure image token is in text for all samples
-        image_token = processor.image_token
-        texts = [
-            text + f" {image_token}" if image_token not in text else text
-            for text in texts
         ]
 
         # Process image/video inputs for all samples in batch
@@ -80,9 +75,11 @@ for batch_idx, batch_data in enumerate(tqdm(test_dataset_batched)):
 
         # Generate responses for the entire batch
         generated_ids = model.generate(
-            **inputs, max_new_tokens=1024
-        )  # Reduce token count
-
+            **inputs,
+            do_sample=False,  # 关闭采样
+            num_beams=1,  # 使用贪婪搜索（beam=1）
+            max_new_tokens=1024
+        )
         # Trim the generated ids to only include the new tokens
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
@@ -115,4 +112,5 @@ os.makedirs(OUTPUT_PATH, exist_ok=True)
 with open(output_file_path, "w", encoding="utf-8") as f:
     json.dump(results, f, ensure_ascii=False, indent=4)
 
-print(f"Acc: {np.mean(acc):.2f}")
+acc = np.mean(acc) if len(acc) != 0 else 0
+print(f"Acc: {acc:.2f}")
