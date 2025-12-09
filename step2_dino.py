@@ -56,13 +56,18 @@ def frame_select_dino(runner, model, **data):
             pred_obj = []
         else:
             pred_obj = runner.detect_data[data["qid"]]["pred"]
-            if runner.question_only:
-                pred_obj = pred_obj["question"]
-            else:
-                pred_obj = [
-                    item for item_list in pred_obj.values() for item in item_list
-                ]
-                pred_obj = list(set(pred_obj))
+            try:     
+                if runner.question_only:
+                    pred_obj = pred_obj["question"]
+                else:
+                    pred_obj = [
+                        item for item_list in pred_obj.values() for item in item_list
+                    ]
+                    pred_obj = list(set(pred_obj))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                pred_obj = []
 
         pred_obj = [obj.lower() for obj in pred_obj]
         pred_obj = [obj for obj in pred_obj if obj.lower() != "c"]
