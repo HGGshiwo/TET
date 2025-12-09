@@ -11,13 +11,12 @@ from trl import SFTConfig, SFTTrainer
 
 from train_utils import process_vision_info
 from generate_dataset import generate_dataset
+from utils import load_data
 
 
-dataset_name = "egoschema_subset"
-
-ANSWER_PATH = r"D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl"
+data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft2"
 EPOCH_NUM = 4
 
 
@@ -47,16 +46,18 @@ def collate_fn(examples):
     # Create labels by cloning input_ids and mask the pad tokens
     labels = batch["input_ids"].clone()
     labels[labels == processor.tokenizer.pad_token_id] = -100
-    
+
     assistant_token = processor.tokenizer.convert_tokens_to_ids("assistant")
     assistant_mask = labels == assistant_token
-    assert (assistant_mask.sum(dim=1) == 1).all(), "每个样本中必须有且只有一个assistant token"
+    assert (
+        assistant_mask.sum(dim=1) == 1
+    ).all(), "每个样本中必须有且只有一个assistant token"
     batch_size, seq_len = labels.shape[:2]
     positions = torch.arange(seq_len, device=labels.device).unsqueeze(0)
     positions = positions.expand(batch_size, seq_len)
-    
+
     target_positions = (assistant_mask * (positions + 1)).argmax(dim=1)
-    
+
     mask_positions = positions <= target_positions.unsqueeze(1)
     labels[mask_positions] = -100
 
@@ -64,7 +65,8 @@ def collate_fn(examples):
     return batch
 
 
-train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_name, ANSWER_PATH)
+data_cfg = load_data(data_cfg_path)
+train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_cfg)
 
 # Model and processor configuration
 
@@ -83,7 +85,7 @@ model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
 )
 processor = AutoProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
-processor.tokenizer.padding_side = 'left'
+processor.tokenizer.padding_side = "left"
 
 # Configure LoRA for model adaptation
 peft_config = LoraConfig(

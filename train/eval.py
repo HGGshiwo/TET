@@ -9,15 +9,14 @@ from transformers import BitsAndBytesConfig
 from peft import PeftModel, PeftConfig
 import numpy as np
 from tqdm import tqdm
+    
 
-
-dataset_name = "egoschema_subset"
 # Model and processor setup
 model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft"
 ANSWER_PATH = r"D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft_eval"
-TEST_SFT = True
-batch_size = 4
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft_raw"
+TEST_SFT = False
+batch_size = 8
 
 train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_name, ANSWER_PATH)
 

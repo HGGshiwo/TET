@@ -1,0 +1,8 @@
+- name: egoschema_subset
+  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl
+  fps: 0.5
+
+- name: nextmc_test
+  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl
+  fps: 1
+
