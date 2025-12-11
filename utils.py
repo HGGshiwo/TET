@@ -17,6 +17,7 @@ from torchvision.utils import make_grid as tv_make_grid
 from typing import List, Generator
 import os
 import requests
+from qwen_vl_utils import smart_resize
 
 decord.bridge.set_bridge("torch")
 
@@ -201,7 +202,7 @@ class QwenModel(nn.Module):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image", "image": i},
+                            {"type": "image", "image": i, "max_pixels": 1920*1080},
                             {"type": "text", "text": q},
                         ],
                     }
@@ -483,7 +484,8 @@ def get_frame_by_idx(video_path, idx, fps=1):
     video = vr.get_batch(idx)
     video = video.cpu().numpy()
     video = [Image.fromarray(v) for v in video]
-    # video = [resize_image(m) for m in video] # only valid for videomme-long
+    r_height, r_width = smart_resize(video[0].height, video[0].width, 1, 640*480, 1920*1080)
+    video = [resize_image(m, r_width, r_height) for m in video] # only valid for videomme-long
     return video  # (C, H, W)
 
 def get_video_size(video_path, fps=1):
