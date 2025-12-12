@@ -1,3 +1,4 @@
+import jsonlines
 import torch
 import os
 import json
@@ -9,16 +10,28 @@ from transformers import BitsAndBytesConfig
 from peft import PeftModel, PeftConfig
 import numpy as np
 from tqdm import tqdm
-    
+from utils import load_data, save_data
 
 # Model and processor setup
 model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft"
-ANSWER_PATH = r"D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft_raw"
+
+# data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval1.yml" # for answer1
+data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval2.yml" # for answer2
+data_cfg = load_data(data_cfg_path)
 TEST_SFT = False
 batch_size = 8
+# PROMPT_TYPE = "v1"  # 推理增强
+# PROMPT_TYPE = "v2" # 直接输出答案
+PROMPT_TYPE = "v3"  # 让模型关注关键帧
 
-train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_name, ANSWER_PATH)
+# OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer1
+OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
+
+# data_cfg = load_data(data_cfg_path)
+train_dataset, test_dataset, eval_dataset = generate_dataset(
+    data_cfg, prompt_type=PROMPT_TYPE
+)
+save_data(data_cfg, os.path.join(OUTPUT_PATH, "data_cfg.yml"))
 
 # BitsAndBytesConfig
 bnb_config = BitsAndBytesConfig(
@@ -39,77 +52,95 @@ if TEST_SFT:
     model = PeftModel.from_pretrained(model, model_id)
 processor = AutoProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
-processor.tokenizer.padding_side = 'left'
-acc = []
-results = {}
+processor.tokenizer.padding_side = "left"
 
-# Process batches
-test_dataset_batched = test_dataset.batch(batch_size)
+for name, dataset in test_dataset.items():
+    results_path = os.path.join(OUTPUT_PATH, f"result_{name}.jsonl")
+    results = load_data(results_path) if os.path.exists(results_path) else {}
+    writer = jsonlines.open(results_path, "a")
 
-for batch_idx, batch_data in enumerate(tqdm(test_dataset_batched)):
-    try:
-        # Apply chat template to all messages in batch
-        texts = [
-            processor.apply_chat_template(
-                msg, tokenize=False, add_generation_prompt=True
+    acc = {}
+
+    def filter(sample):
+        if sample["qid"] not in results:
+            return True
+        sample = results[sample["qid"]]
+        acc[sample["qid"]] = sample["truth"] == sample["answer"].strip()[0]
+        return False
+
+    # Process batches
+    test_dataset_batched = dataset.filter(filter).batch(batch_size)
+    for batch_idx, batch_data in enumerate(
+        tqdm(test_dataset_batched, desc=f"test {name}")
+    ):
+        try:
+            # Apply chat template to all messages in batch
+            texts = [
+                processor.apply_chat_template(
+                    msg, tokenize=False, add_generation_prompt=True
+                )
+                for msg in batch_data["message"]
+            ]
+
+            # Process image/video inputs for all samples in batch
+            batch_image_inputs = []
+            batch_video_inputs = []
+            for msg in batch_data["message"]:
+                image_inputs, video_inputs = process_vision_info(msg)
+                batch_image_inputs.append(image_inputs)
+                batch_video_inputs.append(video_inputs)
+
+            # Prepare inputs with padding
+            inputs = processor(
+                text=texts,
+                videos=batch_video_inputs,
+                return_tensors="pt",
+                padding=True,  # Add padding for batch processing
+            ).to("cuda")
+
+            # Generate responses for the entire batch
+            generated_ids = model.generate(
+                **inputs,
+                do_sample=False,  # 关闭采样
+                num_beams=1,  # 使用贪婪搜索（beam=1）
+                max_new_tokens=1024,
             )
-            for msg in batch_data["message"]
-        ]
+            # Trim the generated ids to only include the new tokens
+            generated_ids_trimmed = [
+                out_ids[len(in_ids) :]
+                for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
 
-        # Process image/video inputs for all samples in batch
-        batch_image_inputs = []
-        batch_video_inputs = []
-        for msg in batch_data["message"]:
-            image_inputs, video_inputs = process_vision_info(msg)
-            batch_image_inputs.append(image_inputs)
-            batch_video_inputs.append(video_inputs)
+            # Decode all outputs in batch
+            output_texts = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
 
-        # Prepare inputs with padding
-        inputs = processor(
-            text=texts,
-            videos=batch_video_inputs,
-            return_tensors="pt",
-            padding=True,  # Add padding for batch processing
-        ).to("cuda")
-
-        # Generate responses for the entire batch
-        generated_ids = model.generate(
-            **inputs,
-            do_sample=False,  # 关闭采样
-            num_beams=1,  # 使用贪婪搜索（beam=1）
-            max_new_tokens=1024
-        )
-        # Trim the generated ids to only include the new tokens
-        generated_ids_trimmed = [
-            out_ids[len(in_ids) :]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-
-        # Decode all outputs in batch
-        output_texts = processor.batch_decode(
-            generated_ids_trimmed,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )
-
-        # Process each output in the batch
-        for i, (output_text, qid, truth) in enumerate(
-            zip(output_texts, batch_data["qid"], batch_data["truth"])
-        ):
-            cur = {
-                "raw": output_text,
-                **format_output(output_text),
-                "truth": truth,
-            }
-            results[qid] = cur
-            acc.append(cur["answer"] == truth)
-    except Exception as e:
-        print(f"❌ Error at batch {batch_idx}: {e}")
-
-output_file_path = os.path.join(OUTPUT_PATH, "results.json")
-os.makedirs(OUTPUT_PATH, exist_ok=True)
-with open(output_file_path, "w", encoding="utf-8") as f:
-    json.dump(results, f, ensure_ascii=False, indent=4)
-
-acc = np.mean(acc) if len(acc) != 0 else 0
-print(f"Acc: {acc:.2f}")
+            # Process each output in the batch
+            for i, (output_text, qid, truth) in enumerate(
+                zip(output_texts, batch_data["qid"], batch_data["truth"])
+            ):
+                try:
+                    if PROMPT_TYPE == "v1":
+                        output = format_output(output_text)
+                    else:
+                        output = {"answer": output_text}
+                    cur = {
+                        "raw": output_text,
+                        **output,
+                        "truth": truth,
+                        "qid": qid,
+                    }
+                    writer.write(cur)
+                    acc[qid] = cur["answer"].strip()[0] == truth
+                except Exception as e:
+                    print(f"❌ Error at {output_text}: {e}")
+                    continue
+        except Exception as e:
+            print(f"❌ Error at batch {batch_idx}: {e}")
+    acc = list(acc.values())
+    acc = np.array(acc)
+    acc_value = acc.mean() if len(acc) != 0 else 0
+    print(f"{name} Acc: {acc_value*100:.2f}[{acc.sum()}/{len(acc)}]")

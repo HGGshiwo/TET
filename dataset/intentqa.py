@@ -29,16 +29,17 @@ class IntentQADataset(BaseDataset):
         data = []
         for item in self.anno:
             qid = item["qid"]
-            question = item["question"]
-            question = [question.strip()]
+            question = item["question"].strip()
+            options = []
             for i in range(5):
-                question.append(f"{OPTIONS[i]}. {item['options'][i].strip()}")
-            question = "\n".join(question)
+                options.append(f"{OPTIONS[i]}. {item['options'][i].strip()}")
+            question = "\n".join([question] + options)
             new_item = {
                 "qid": qid,
                 "vid": item['vid'],
                 "video_path": f"{item['vid']}.mp4",
                 "question": question,
+                "options": options,
             }
             if item.get("truth", None) is not None:
                 new_item["truth"] = OPTIONS[item["truth"]]

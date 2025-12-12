@@ -4,7 +4,6 @@ from torch.utils.data import ConcatDataset
 from utils import *
 from .base import BaseDataset
 from .egoschema import EgoSchemaDataset
-from .moviechat import MovieChatDataset
 from .nextqa import NextMCDataset, NextOEDataset
 from .videomme import VideoMMEDataset
 from .intentqa import IntentQADataset

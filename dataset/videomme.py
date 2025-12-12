@@ -29,6 +29,7 @@ class VideoMMEDataset(BaseDataset):
                 "video_path": vid + ".mp4",
                 "question": question,
                 "truth": item["answer"],
+                "options": item["options"]
             }
             data.append(new_item)
         return data

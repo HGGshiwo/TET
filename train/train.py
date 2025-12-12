@@ -66,7 +66,11 @@ def collate_fn(examples):
 
 
 data_cfg = load_data(data_cfg_path)
-train_dataset, test_dataset, eval_dataset = generate_dataset(dataset_cfg)
+train_dataset, test_dataset, eval_dataset = generate_dataset(
+    dataset_cfg=data_cfg,
+    prompt_type="v1", 
+    filter=lambda data: data["answer"] != data["truth"],
+)
 
 # Model and processor configuration
 

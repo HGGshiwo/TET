@@ -19,15 +19,17 @@ class MLVUDataset(BaseDataset):
         for item in self.anno:
             qid = f'{item["question_id"]}_{item["video"]}'
             question = item["question"]
-            question = [question.strip()]
+            question = question.strip()
+            options = []
             for i in range(6):
-                question.append(f"{OPTIONS[i]}. {str(item['candidates'][i]).strip()}")
-            question = "\n".join(question)
+                options.append(f"{OPTIONS[i]}. {str(item['candidates'][i]).strip()}")
+            question = "\n".join([question] + options)
             new_item = {
                 "qid": qid,
                 "vid": item['video'].replace(".mp4", ""),
                 "video_path": item['video'],
                 "question": question,
+                "options": options,
             }
             if item.get("answer", None) is not None:
                 idx = item["candidates"].index(item["answer"])

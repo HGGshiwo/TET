@@ -1,0 +1,5 @@
+- name: egoschema_subset
+  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test2_5\answer_1.jsonl
+  fps: 0.5
+  test_rate: 1
+  eval_rate: 0

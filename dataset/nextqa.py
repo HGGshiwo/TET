@@ -112,10 +112,11 @@ class NextMCDataset(NextQADataset):
             question, truth = row["question"], row["answer"]
             _qid, q_type = row["qid"], row["type"]
             qid = f"{vid}_{_qid}"
-            question = [question.strip()]
+            question = question.strip()
+            options = []
             for i in range(5):
-                question.append(f"{OPTIONS[i]}. {row[f'a{i}'].strip()}")
-            question = "\n".join(question)
+                options.append(f"{OPTIONS[i]}. {row[f'a{i}'].strip()}")
+            question = "\n".join([question] + options)
             item = {
                 "qid": qid,
                 "vid": vid,
@@ -123,6 +124,7 @@ class NextMCDataset(NextQADataset):
                 "q_type": q_type,
                 "question": question,
                 "truth": OPTIONS[truth],
+                "options": options
             }
             for i in range(5):
                 item[f"cm_a{i}"] = row[f"a{i}"]  # for computing metrics

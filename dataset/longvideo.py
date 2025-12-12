@@ -17,18 +17,19 @@ class LongVideoDataset(BaseDataset):
         data = []
         for item in self.anno:
             qid = f'{item["id"]}_{item["video_id"]}'
-            question = item["question"]
-            question = [question.strip()]
+            question = item["question"].strip()
+            options = []
             for i in range(6):
-                question.append(f"{OPTIONS[i]}. {item[f'option{i}'].strip()}")
-            question = "\n".join(question)
+                options.append(f"{OPTIONS[i]}. {item[f'option{i}'].strip()}")
+            question = "\n".join([question] + options)
             new_item = {
                 "qid": qid,
                 "vid": item['video_id'],
                 "video_path": item['video_path'],
                 "question": question,
+                "options": options,
             }
             if item.get("correct_choice", None) is not None:
-                new_item["truth"] = OPTIONS[correct_choice]
+                new_item["truth"] = OPTIONS[item["correct_choice"]]
             data.append(new_item)
         return data

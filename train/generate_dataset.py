@@ -14,23 +14,38 @@ from trl.trainer.utils import remove_none_values
 import re
 from train_utils import compress_consecutive_numbers
 
+RAW_OPTIONS = list("ABCDEF")
+
 PROMPT = """
-Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON in the following format. You can use "start_index-end_index" as a shorthand for keyframes. Do not add comments:
+Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON with 3 keys: "keyframe", "reason", "answer". You can use "start-end" as a shorthand for keyframes. Do not add comments:
 {{
     "keyframe": "keyframe related to the question, e.g. 1-90, 183, 185",
     "reason": "Provide a concise step-by-step analysis based on the visual information in the specified keyframes",
-    "answer": "one of A/B/C/D/E"
+    "answer": "one from {options}"
 }}
 """
 
+PROMPT2 = """
+Based on the video, answer the following question: {question}. Output only one character from {options}
+"""
 
-def format_data(sample, fps=1, test=False):
+PROMPT3 = """
+Based on the video, focus on the frame corresponding to {keyframe} and answer the following question: {question}. Output only one character from {options}.
+"""
+
+
+def format_data(sample, fps=1, test=False, prompt_type="v1"):
     """
     Format a single dataset sample into the required structure.
     """
     assert fps <= 1, "fps must <= 1"
     input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
     keyframe = compress_consecutive_numbers(input_index)
+    prompt = {"v1": PROMPT, "v2": PROMPT2, "v3": PROMPT3}[prompt_type]
+    options = "/".join(RAW_OPTIONS[: len(sample["options"])])
+    format_data = {"question": sample["question"], "options": options}
+    if prompt_type == "v3":
+        format_data.update({"keyframe": keyframe})
     answer = {
         "reason": sample["explain"],
         "keyrfame": keyframe,
@@ -49,7 +64,7 @@ def format_data(sample, fps=1, test=False):
                 },
                 {
                     "type": "text",
-                    "text": PROMPT.format(question=sample["question"]),
+                    "text": prompt.format(**format_data),
                 },
             ],
         },
@@ -70,40 +85,64 @@ def format_data(sample, fps=1, test=False):
         "truth": sample["truth"],
         "qid": sample["qid"],
         "message": message,
+        "keyframe": keyframe,
     }
 
 
 def split_dataset(
     dataset, test_rate, eval_rate, *, test_map_kwargs=None, train_map_kwargs=None
 ):
+    """ test_rate == 1: test
+        test_rate < 1 + eval_rate == 0: test + train
+        test_rate < 1 + eval_rate > 0 : test + train + eval
+    """
     train_eval_rate = 1 - test_rate
     train_rate = 1 - test_rate - eval_rate
-    assert train_rate >= 1, "test_rate + eval_rate must < 1"
-    train_rate = train_rate / (train_rate + eval_rate)
-    eval_rate = 1 - train_rate
+    assert train_rate <= 1, "test_rate + eval_rate must < 1"
 
-    train_test_dataset = dataset.train_test_split(test_size=test_rate, seed=1234)
-    train_eval_dataset, test_dataset = split_dataset["train"], split_dataset["test"]
+    if train_rate != 0:
+        train_rate = train_rate / (train_rate + eval_rate)
+        eval_rate = 1 - train_rate
+        train_test_dataset = dataset.train_test_split(test_size=test_rate, seed=1234)
+        train_eval_dataset, test_dataset = (
+            train_test_dataset["train"],
+            train_test_dataset["test"],
+        )
+    else:
+        train_eval_dataset = Dataset.from_list([])
+        test_dataset = dataset
     if train_map_kwargs is not None:
         train_eval_dataset = train_eval_dataset.map(**train_map_kwargs)
     if test_map_kwargs is not None:
         test_dataset = test_dataset.map(**test_map_kwargs)
-    train_eval_dataset = train_eval_dataset.train_test_split(
-        test_size=eval_rate, seed=1234
-    )
-    train_dataset = train_eval_dataset["train"]
-    eval_dataset = train_eval_dataset["test"]
+    if eval_rate != 0:
+        train_eval_dataset = train_eval_dataset.train_test_split(
+            test_size=eval_rate, seed=1234
+        )
+        train_dataset = train_eval_dataset["train"]
+        eval_dataset = train_eval_dataset["test"]
+    else:
+        train_dataset = train_eval_dataset
+        eval_dataset = Dataset.from_list([])
     return train_dataset, eval_dataset, test_dataset
 
 
 def generate_dataset(
-    dataset_cfg, dataset_config="./configs/dataset.yml", test_rate=0.2, eval_rate=0.1
+    dataset_cfg,
+    dataset_config="./configs/dataset.yml",
+    prompt_type="v1",
+    filter=None,
 ):
     train_dataset = {}
     eval_dataset = {}
     test_dataset = {}
 
-    for dataset_name, answer_path in dataset_cfg.items():
+    for cfg in dataset_cfg:
+        dataset_name = cfg["name"]
+        answer_path = cfg["answer_path"]
+        fps = cfg["fps"]
+        test_rate = cfg["test_rate"]
+        eval_rate = cfg["eval_rate"]
         dataset = build_dataset(
             dataset_config=dataset_config, name=dataset_name, is_training=False
         )
@@ -114,7 +153,7 @@ def generate_dataset(
             data = data_list.get(qid, None)
             if data is None:
                 continue
-            if data["answer"] != data["truth"]:
+            if filter is not None and not filter(data):
                 continue
             video_path = str(
                 Path(dataset.config.video_path).joinpath(raw_data["video_path"])
@@ -124,24 +163,26 @@ def generate_dataset(
 
         dataset = Dataset.from_list(out)
         dataset = dataset.with_transform(remove_none_values)
+        format_kwargs = {"fps": fps, "prompt_type": prompt_type}
+
         train, eval, test = split_dataset(
             dataset,
             test_rate=test_rate,
             eval_rate=eval_rate,
             train_map_kwargs=dict(
-                function=lambda sample: format_data(sample, fps=FPS),
-                desc=f"format {dataset_name}[train]",
+                function=lambda sample: format_data(sample, **format_kwargs),
+                desc=f"format {dataset_name}[train+eval]",
             ),
             test_map_kwargs=dict(
-                function=lambda sample: format_data(sample, fps=FPS, test=True),
-                desc=f"format {dataset_name}[eval]",
+                function=lambda sample: format_data(sample, test=True, **format_kwargs),
+                desc=f"format {dataset_name}[test]",
             ),
         )
         train_dataset[dataset_name] = train
         test_dataset[dataset_name] = test
-        eval_dataset[dataset_name] = eval_dataset
-    train_dataset = concatenate_datasets(train_dataset.values())
-    eval_dataset = concatenate_datasets(eval_dataset.values())
+        eval_dataset[dataset_name] = eval
+    train_dataset = concatenate_datasets(list(train_dataset.values()))
+    eval_dataset = concatenate_datasets(list(eval_dataset.values()))
     return train_dataset, test_dataset, eval_dataset
 
 

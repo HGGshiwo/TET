@@ -23,16 +23,17 @@ class EgoSchemaDataset(BaseDataset):
             qid = item["q_uid"]
             if self.split == "subset" and qid not in subset_names_list:
                 continue
-            question = item["question"]
-            question = [question.strip()]
+            question = item["question"].strip()
+            options = []
             for i in range(5):
-                question.append(f"{OPTIONS[i]}. {item[f'option {i}'].strip()}")
-            question = "\n".join(question)
+                options.append(f"{OPTIONS[i]}. {item[f'option {i}'].strip()}")
+            question = "\n".join([question] + options)
             new_item = {
                 "qid": qid,
                 "vid": qid,
                 "video_path": qid + ".mp4",
                 "question": question,
+                "options": options,
             }
             if self.split == "subset":
                 new_item["truth"] = OPTIONS[json_data[qid]]
