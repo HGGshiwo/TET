@@ -57,9 +57,9 @@ def save_data(data, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".json":
-        json.dump(data, path.open("w"), indent=4)
+        json.dump(data, path.open("w", encoding='utf-8'), indent=4, allow_unicode=True)
     elif path.suffix == ".yml":
-        yaml.dump(data, path.open("w"), indent=4)
+        yaml.dump(data, path.open("w", encoding='utf-8'), indent=4, allow_unicode=True)
     else:
         path.write_text(data)
 
@@ -202,7 +202,7 @@ class QwenModel(nn.Module):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image", "image": i, "max_pixels": 1920*1080},
+                            {"type": "image", "image": i, "max_pixels": 1280*720},
                             {"type": "text", "text": q},
                         ],
                     }
@@ -484,7 +484,7 @@ def get_frame_by_idx(video_path, idx, fps=1):
     video = vr.get_batch(idx)
     video = video.cpu().numpy()
     video = [Image.fromarray(v) for v in video]
-    r_height, r_width = smart_resize(video[0].height, video[0].width, 1, 640*480, 1920*1080)
+    r_height, r_width = smart_resize(video[0].height, video[0].width, 1, 640*480, 1280*720)
     video = [resize_image(m, r_width, r_height) for m in video] # only valid for videomme-long
     return video  # (C, H, W)
 
