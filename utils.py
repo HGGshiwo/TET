@@ -499,7 +499,8 @@ def get_video_size(video_path, fps=1):
 
 class LazyFrameLoader:
     @classmethod
-    def create(cls, video_path, fps, batch_size=1):
+    def create(cls, video_path, fps, batch_size=1, ignore=None):
+        ignore = [] if ignore is None else ignore
         vr = decord.VideoReader(str(video_path))
         origin_fps = vr.get_avg_fps()
         ratio = origin_fps / fps
@@ -507,6 +508,13 @@ class LazyFrameLoader:
         if idx[-1] != len(vr) - 1:
             idx.append(len(vr) - 1)
         idx2 = list(range(len(idx)))
+        
+        filter_set = set(ignore)
+        # 使用zip配对两个列表的元素，过滤掉list1元素在filter中的项
+        # 最后用zip(*)解包回两个列表
+        filtered_pairs = [(a, b) for a, b in zip(idx, idx2) if b not in filter_set]
+        idx, idx2 = zip(*filtered_pairs) if filtered_pairs else ([], [])
+    
         idx = chunk(idx, batch_size)
         idx2 = chunk(idx2, batch_size)
         return [cls(video_path, i, i2) for i, i2 in zip(idx, idx2)]
@@ -528,6 +536,7 @@ class LazyFrameLoader:
         if return_idx:
             return video, self.idx
         return video  # (C, H, W)
+        
 
 def generate_table(row_names, data_dict, filter=True):
     # 获取列名

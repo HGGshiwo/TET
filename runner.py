@@ -3,7 +3,8 @@ from pathlib import Path
 import decord
 import asyncio
 import multiprocessing as mp
-mp.set_start_method('spawn', force=True) # for linux
+
+mp.set_start_method("spawn", force=True)  # for linux
 from functools import partial
 from utils import redirect_stdout
 
@@ -18,16 +19,16 @@ class Runner:
         self,
         task,
         output_path=None,
-        video_fps=None, # work when iter_frame is True
+        video_fps=None,  # work when iter_frame is True
         iter_key="qid",
         iter_frame=False,
-        filter = None,
+        filter=None,
         dataset="nextmc_test",
         dataset_config="./configs/dataset.yml",
         iter_callback=None,
         batch_size=1,
         max_workers=16,
-        **kwargs
+        **kwargs,
     ):
         for k, v in kwargs.items():
             assert not hasattr(self, k), f"{k} already exists"
@@ -51,7 +52,9 @@ class Runner:
         self.iter_key = iter_key
         self.iter_frame = iter_frame
         if self.iter_frame is True:
-            assert video_fps is not None, "video_fps must be set when iter_frame is True"
+            assert (
+                video_fps is not None
+            ), "video_fps must be set when iter_frame is True"
             self.video_fps = video_fps
         else:
             assert video_fps is None, "video_fps must be None when iter_frame is False"
@@ -61,15 +64,19 @@ class Runner:
         self.filter = filter
         self.batch_size = batch_size
         self.total = 0
-        
+
     def create_submit(self, **kwargs):
         # return kwargs["excutor"].submit
         if self.batch_size == 1:
+
             def new_func(func, runner, **x):
                 return lambda: func(runner, **x)
+
         else:
+
             def new_func(func, runner, data):
                 return lambda: func(runner, data)
+
         return new_func
 
     def create_as_completed(self, **kwargs):
@@ -77,6 +84,7 @@ class Runner:
         def as_completed(tasks):
             for task in tasks:
                 yield task()
+
         return as_completed
 
     def data_iter(self):
@@ -105,19 +113,28 @@ class Runner:
         data_iter = (
             self.dataset.get_video_info() if self.iter_key == "vid" else self.dataset
         )
-        bar = None if not use_tqdm else tqdm(total=len(data_iter), desc="Generating frames")
+        bar = (
+            None
+            if not use_tqdm
+            else tqdm(total=len(data_iter), desc="Generating frames")
+        )
         for data in data_iter:
-            if data[self.iter_key] not in self.processed:
-                _video_path = Path(video_path).joinpath(data["video_path"])
-                batch_loader = LazyFrameLoader.create(_video_path, self.video_fps, self.batch_size)
-                for d in batch_loader:
-                    yield {"frame": d, **data.copy()}
+            _video_path = Path(video_path).joinpath(data["video_path"])
+            key = data[self.iter_key]
+            processed_idx = list(self.processed.get(key, {}).keys())
+            batch_loader = LazyFrameLoader.create(
+                video_path=_video_path,
+                fps=self.video_fps,
+                batch_size=self.batch_size,
+                ignore=processed_idx,
+            )
+            for d in batch_loader:
+                yield {"frame": d, **data.copy()}
             if bar is not None:
                 bar.update(1)
         if bar is not None:
             bar.close()
-            
-            
+
     def handle_result(self, writer, result):
         if self.batch_size == 1:
             if result is not None:
@@ -133,13 +150,12 @@ class Runner:
                     writer.write(res)
                 else:
                     self.invalid += 1
-                    
+
     def iter_loop(self, **kwargs):
         submit = self.create_submit(**kwargs)
         iter_func = self.frame_iter if self.iter_frame else self.data_iter
         for data in iter_func():
             self.tasks.append(submit(self.task, self, **data))
-
 
     def compelete_loop(self):
         as_completed = self.create_as_completed()
@@ -147,9 +163,13 @@ class Runner:
         return self.bar
 
     def __call__(self):
-        writer =  jsonlines.open(self.output_path, "a") if self.output_path is not None else None
+        writer = (
+            jsonlines.open(self.output_path, "a")
+            if self.output_path is not None
+            else None
+        )
         # with ProcessPoolExecutor(max_workers=1) as executor:
-            # self.iter_loop(excutor=executor)
+        # self.iter_loop(excutor=executor)
         self.iter_loop()
         for result in self.compelete_loop():
             with redirect_stdout():
@@ -175,7 +195,11 @@ class AsyncRunner(Runner):
         return submit
 
     async def __call__(self):
-        writer = jsonlines.open(self.output_path, "a") if self.output_path is not None else None
+        writer = (
+            jsonlines.open(self.output_path, "a")
+            if self.output_path is not None
+            else None
+        )
         sem = asyncio.Semaphore(200)
         self.iter_loop(sem=sem)
         for result in self.compelete_loop():
@@ -186,7 +210,10 @@ class AsyncRunner(Runner):
         if writer is not None:
             writer.close()
 
+
 import torch
+
+
 class MultiGPURunner(Runner):
     def worker(self, gpu_id, model_cls):
         # 每个进程绑定自己的GPU
@@ -201,7 +228,7 @@ class MultiGPURunner(Runner):
             else:
                 result = self.task(self, model=model, **task_data)
             self.result_queue.put(result)
-        
+
     def __call__(self, model_class, gpu_ids=[]):
         manager = mp.Manager()
         self.task_queue = manager.Queue()
@@ -209,7 +236,9 @@ class MultiGPURunner(Runner):
 
         # 1. 任务入队
         # iter_func = lambda: self.frame_iter(True) if self.iter_frame else self.data_iter
-        iter_func = partial(self.frame_iter, True) if self.iter_frame else self.data_iter
+        iter_func = (
+            partial(self.frame_iter, True) if self.iter_frame else self.data_iter
+        )
         total = 0
         for data in iter_func():
             self.task_queue.put(data)
@@ -227,7 +256,11 @@ class MultiGPURunner(Runner):
 
         # 4. 收集结果
         bar = tqdm(total=total)
-        writer = jsonlines.open(self.output_path, "a") if self.output_path is not None else None
+        writer = (
+            jsonlines.open(self.output_path, "a")
+            if self.output_path is not None
+            else None
+        )
         for _ in range(total):
             with redirect_stdout():
                 result = self.result_queue.get()
