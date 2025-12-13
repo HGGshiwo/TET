@@ -27,7 +27,7 @@ Below is a question related to a video and its options. Please analyze the peopl
 3. Pronouns should be converted to the name of the object, for example, "he" should be changed to "man".
 4. The person or object must have a clear and specific meaning; overly broad terms such as "something" are not allowed.
 5. If the question contains a description of a person, convert it into a concise adjective + noun phrase.
-Only add objects that meet these criteria to the list. Finally, output a JSON string with the keys "question", "A", "B", "C", "D", and "E", corresponding to the list of objects mentioned in the question and each option. If no people or objects can be identified based on the given information, return an empty list. The question and options are as follows: [question]
+Only add objects that meet these criteria to the list. Finally, output a JSON string with the keys "question", "A", "B", "C", "D", and "E", corresponding to the list of objects mentioned in the question and each option. If no people or objects can be identified based on the given information, return an empty list. Do not add any comments in JSON. The question and options are as follows: [question]
 """
 
 

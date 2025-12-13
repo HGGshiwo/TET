@@ -24,7 +24,7 @@ PROMPT = f"""Here is a question related to the video and the frames related to t
 1. If a frame is irrelevant to the question, omit it.
 2. If there are multiple frames with highly similar content that do not introduce new information relevant to answering the question, keep only one such frame.
 3. The maximum number of frames you are allowed to select is [max_frame].
-Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, including the reasons for deleting or retaining frames, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question. Below is the question: [question]. Output example:{json.dumps(example)}, Please provide your answer:
+Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, including the reasons for deleting or retaining frames, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question, and do not add any comments in JSON. Below is the question: [question]. Output example:{json.dumps(example)}, Please provide your answer:
 """
 
 
