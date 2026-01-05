@@ -24,7 +24,7 @@ decord.bridge.set_bridge("torch")
 from tqdm import tqdm
 import sys
 import contextlib
-
+from moviepy import VideoFileClip
 
 class DummyFile:
     def __init__(self, file):
@@ -496,6 +496,12 @@ def get_video_size(video_path, fps=1):
     if origin_idx[-1] != len(vr) - 1:
         origin_idx.append(len(vr) - 1)
     return len(origin_idx)
+
+def get_video_length(video_path):
+    """return video lenght(in seconds)"""
+    with VideoFileClip(video_path) as clip:
+        duration = clip.duration
+    return int(duration)
 
 class LazyFrameLoader:
     @classmethod

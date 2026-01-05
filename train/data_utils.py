@@ -37,25 +37,35 @@ PROMPT3 = """
 Based on the video, focus on the frame corresponding to {keyframe} and answer the following question: {question}. Output only one character from {options}.
 """
 
+PROMPT4 = """
+Based on the video, focus on the frame corresponding to {keyframe} and answer the following question: {question}. Output only one character from {options}. Please think step by step.
+"""
+
 
 def format_data(sample, fps, test=False, prompt_type="v1"):
     """
     Format a single dataset sample into the required structure.
     """
-
-    input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
-    keyframe = compress_consecutive_numbers(input_index)
-    prompt = {"v1": PROMPT, "v2": PROMPT2, "v3": PROMPT3}[prompt_type]
     options = "/".join(RAW_OPTIONS[: len(sample["options"])])
     format_data_kwargs = {"question": sample["question"], "options": options}
-    if prompt_type == "v3":
-        format_data_kwargs.update({"keyframe": keyframe})
-    answer = {
-        "reason": sample["explain"],
-        "keyrfame": keyframe,
-        "answer": sample["truth"],
-    }
+    prompt = {"v1": PROMPT, "v2": PROMPT2, "v3": PROMPT3}[prompt_type]
+    out = {}
+    if not test:
+        assert "input_idx" in sample, "must provide input_idx for eval or train"
+    if "input_idx" in sample:
+        input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
+        keyframe = compress_consecutive_numbers(input_index)
+        if prompt_type == "v3":
+            format_data_kwargs.update({"keyframe": keyframe})
 
+        answer = {
+            "reason": sample["explain"],
+            "keyrfame": keyframe,
+            "answer": sample["truth"],
+        }
+        out["keyframe"] = keyframe
+
+    start_end = {k: sample[k] for k in ["video_start", "video_end"] if k in sample}
     message = [
         {
             "role": "user",
@@ -66,6 +76,7 @@ def format_data(sample, fps, test=False, prompt_type="v1"):
                     "max_pixels": 160 * 120,
                     "min_pixels": 0,
                     "fps": float(fps),
+                    **start_end,
                 },
                 {
                     "type": "text",
@@ -75,23 +86,29 @@ def format_data(sample, fps, test=False, prompt_type="v1"):
         },
     ]
     if not test:
+        if prompt_type == "v1":
+            gt_text = json.dumps(answer)
+        else:
+            gt_text = sample["truth"]
         message.append(
             {
                 "role": "assistant",
                 "content": [
                     {
                         "type": "text",
-                        "text": json.dumps(answer),
+                        "text": gt_text,
                     }
                 ],
             }
         )
-    return {
-        "truth": sample["truth"],
-        "qid": sample["qid"],
-        "message": message,
-        "keyframe": keyframe,
-    }
+    out.update(
+        {
+            "truth": sample["truth"],
+            "qid": sample["qid"],
+            "message": message,
+        }
+    )
+    return out
 
 
 def split_dataset(dataset, test_rate, eval_rate, seed=1234):
@@ -135,7 +152,8 @@ def generate_dataset(
     prompt_type="v1",
     max_frame=80,
     filter=None,
-) :
+    split_test=False,
+):
     """return (train dataset, test dataset, eval dataset)"""
     train_dataset = {}
     eval_dataset = {}
@@ -143,24 +161,29 @@ def generate_dataset(
 
     for cfg in dataset_cfg:
         dataset_name = cfg["name"]
-        answer_path = cfg["answer_path"]
+        answer_path = cfg.get("answer_path", None)
         test_rate = cfg["test_rate"]
         eval_rate = cfg["eval_rate"]
         dataset = build_dataset(
             dataset_config=dataset_config, name=dataset_name, is_training=False
         )
-
-        data_list = load_data(answer_path)
+        if answer_path is not None:
+            data_list = load_data(answer_path)
+        else:
+            assert test_rate == 1, "Eval or train dataset must provide answer_path"
         out = []
         for raw_data in dataset:
             qid = raw_data["qid"]
-            data = data_list.get(qid, None)
-            if data is None:
-                continue
-            if filter is not None and not filter(data):
-                continue
+            sample = {}
+            if answer_path is not None:
+                data = data_list.get(qid, None)
+                if data is None:
+                    continue
+                if filter is not None and not filter(data):
+                    continue
+                sample.update(data)
             video_path = os.path.join(dataset.config.video_path, raw_data["video_path"])
-            sample = {**data, **raw_data, "video_path": video_path}
+            sample = {**sample, **raw_data, "video_path": video_path}
             out.append(sample)
 
         train, test, eval = split_dataset(out, test_rate=test_rate, eval_rate=eval_rate)
@@ -174,9 +197,13 @@ def generate_dataset(
                     for sample in data
                 ]
                 for future in tqdm(futures, total=len(data), desc=desc):
-                    out, fps = future.result()
-                    out_list.append(out)
-                    fps_list.append(fps)
+                    try:
+                        out, fps = future.result()
+                        out_list.append(out)
+                        fps_list.append(fps)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
             return out_list, fps_list
 
         for name, data, result in zip(
@@ -184,6 +211,10 @@ def generate_dataset(
             [train, eval, test],
             [train_dataset, eval_dataset, test_dataset],
         ):
+            if split_test and name != "test":
+                continue
+            if not split_test and name == "test":
+                continue
             data, out_fps = run_task(
                 data, f"format {dataset_name}[{name}]", name == "test"
             )
@@ -197,6 +228,10 @@ def generate_dataset(
     for name, dataset, num in zip(
         ["train", "eval", "test"], [train_dataset, eval_dataset, test_dataset], num_list
     ):
+        if split_test and name != "test":
+            continue
+        if not split_test and name == "test":
+            continue
         print(f"{name} dataset: ")
         for k, v in dataset.items():
             print(f"{k}: {len(v)/num*100:.2f}%[{len(v)}/{num}]")
@@ -204,11 +239,13 @@ def generate_dataset(
     def list2dataset(data):
         return Dataset.from_list(list(data)).with_transform(remove_none_values)
 
-    train_dataset = list2dataset([d for v in train_dataset.values() for d in v])
-    eval_dataset = list2dataset([d for v in eval_dataset.values() for d in v])
-    test_dataset = {key: list2dataset(value) for key, value in test_dataset.items()}
-
-    return train_dataset, test_dataset, eval_dataset
+    if not split_test:
+        train_dataset = list2dataset([d for v in train_dataset.values() for d in v])
+        eval_dataset = list2dataset([d for v in eval_dataset.values() for d in v])
+        return train_dataset, eval_dataset
+    else:
+        test_dataset = {key: list2dataset(value) for key, value in test_dataset.items()}
+        return test_dataset
 
 
 def format_output(output):

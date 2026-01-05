@@ -1,8 +1,5 @@
 from torch.utils.data import Dataset
 import argparse
-from transformers import EvalPrediction
-from pathlib import Path
-from utils import load_data
 
 class BaseDataset(Dataset):
     registry = {}
@@ -79,7 +76,7 @@ class BaseDataset(Dataset):
         results = dict(total_num=0, correct_num=0)
         failed = []
         def compute_metrics(pred, item, compute_result):
-            parsed_pred = self.parse_multi_choice_response(pred)
+            parsed_pred = BaseDataset.parse_multi_choice_response(pred)
             if parsed_pred is None:
                 print("None", item["qid"])
             if parsed_pred == item["truth"]:
@@ -97,14 +94,15 @@ class BaseDataset(Dataset):
 
         return compute_metrics
     
-    def parse_multi_choice_response(self, response):
+    @staticmethod
+    def parse_multi_choice_response(response):
         """
         Parse the prediction from the generated response.
         Return the predicted index e.g., A, B, C, D.
         https://github.com/MMMU-Benchmark/MMMU/blob/51ce7f3e829c16bb44bc5445782686b4c3508794/eval/eval_utils.py#L10
         """
         candidates = []
-        all_choices = ["A", "B", "C", "D", "E"]
+        all_choices = ["A", "B", "C", "D", "E", "F"]
         response = response.replace("*", "")
         str_list = [r.strip() for r in response.split("\n") if r.strip() != ""]
         for res in str_list:
