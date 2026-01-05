@@ -95,7 +95,7 @@ class Runner:
         for data in data_iter:
             if data[self.iter_key] in self.processed:
                 continue
-            if self.filter is not None and self.filter(data) is False:
+            if self.filter is not None and self.filter(self, data) is False:
                 continue
             self.total += 1
             if self.batch_size == 1:

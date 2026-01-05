@@ -904,3 +904,20 @@ def best_layout(n, w, h):
             best = (key, r, c)
     _, r, c = best
     return r, c
+
+
+def get_cfg(cfg_path: str|Path, idx=None):
+    step_name = ["obj", "dino", "select", "select2", "answer"]
+    cur_step = Path(cfg_path).stem
+    if idx is None: # 根据文件名称推算是第几步
+        idx = step_name.index(cur_step)
+        if idx == -1:
+            raise ValueError(f"Unknow step: {cur_step}")
+    out = []
+    cur_cfg = load_data(cfg_path)
+    for step in reversed(step_name[:idx]):
+        prev_cfg = load_data(cur_cfg[step])
+        out.insert(0, cur_cfg)
+        cur_cfg = prev_cfg
+    out.insert(0, cur_cfg)
+    return out

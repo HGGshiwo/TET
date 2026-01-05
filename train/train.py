@@ -1,6 +1,5 @@
 # https://connectaman.hashnode.dev/fine-tuning-the-qwen25-7b-vl-instruct-model-a-comprehensive-guide
 import torch
-from datasets import load_dataset
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     AutoProcessor,
@@ -10,14 +9,27 @@ from peft import LoraConfig, get_peft_model
 from trl import SFTConfig, SFTTrainer
 
 from train_utils import process_vision_info
-from generate_dataset import generate_dataset
+from generate_dataset import generate_dataset, parse_multi_choice_response
 from utils import load_data
 
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft2"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4"
 EPOCH_NUM = 4
+PROMPT_TYPE = "v2"
+
+def min_nonzero_pos(x):
+    """x: mask, shape of (batch_size, sequence)
+    return non zero position in x, shape of (batch_size)
+    if more than one posiiton, return the smallest ones
+    """
+    assert (x.sum(dim=1) > 0).all(), "No valid posiiton"
+    # 用一个很大的数填充0的位置
+    x_masked = x.clone()
+    x_masked[~x] = float("inf")
+    min_values, min_indices = x_masked.min(dim=1)
+    return min_indices
 
 
 def collate_fn(examples):
@@ -49,15 +61,12 @@ def collate_fn(examples):
 
     assistant_token = processor.tokenizer.convert_tokens_to_ids("assistant")
     assistant_mask = labels == assistant_token
-    assert (
-        assistant_mask.sum(dim=1) == 1
-    ).all(), "每个样本中必须有且只有一个assistant token"
+
+    assert assistant_mask.any(dim=1).all(), "No assistant token found"
+    target_positions = assistant_mask.int().argmax(dim=1)
     batch_size, seq_len = labels.shape[:2]
     positions = torch.arange(seq_len, device=labels.device).unsqueeze(0)
     positions = positions.expand(batch_size, seq_len)
-
-    target_positions = (assistant_mask * (positions + 1)).argmax(dim=1)
-
     mask_positions = positions <= target_positions.unsqueeze(1)
     labels[mask_positions] = -100
 
@@ -66,10 +75,11 @@ def collate_fn(examples):
 
 
 data_cfg = load_data(data_cfg_path)
-train_dataset, test_dataset, eval_dataset = generate_dataset(
+train_dataset, eval_dataset = generate_dataset(
     dataset_cfg=data_cfg,
-    prompt_type="v1", 
-    filter=lambda data: data["answer"] != data["truth"],
+    prompt_type=PROMPT_TYPE,
+    filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
+    split_test=False,
 )
 
 # Model and processor configuration
@@ -117,10 +127,10 @@ training_args = SFTConfig(
     learning_rate=2e-4,  # Learning rate for training
     lr_scheduler_type="constant",  # Learning rate scheduler type
     logging_steps=10,  # Interval (in steps) for logging
-    eval_steps=10,  # Interval (in steps) for evaluation
+    eval_steps=100,  # Interval (in steps) for evaluation
     eval_strategy="steps",  # Evaluation strategy
     save_strategy="steps",  # Strategy for saving the model
-    save_steps=20,  # Interval (in steps) for saving
+    save_steps=100,  # Interval (in steps) for saving
     metric_for_best_model="eval_loss",  # Metric to evaluate the best model
     greater_is_better=False,  # Lower metric values are better
     load_best_model_at_end=True,  # Load the best model after training

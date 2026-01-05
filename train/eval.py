@@ -1,10 +1,12 @@
 import jsonlines
 import torch
 import os
-import json
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-from datasets import load_dataset
-from generate_dataset import generate_dataset, format_output
+from generate_dataset import (
+    generate_dataset,
+    format_output,
+    parse_multi_choice_response,
+)
 from train_utils import process_vision_info
 from transformers import BitsAndBytesConfig
 from peft import PeftModel, PeftConfig
@@ -13,23 +15,33 @@ from tqdm import tqdm
 from utils import load_data, save_data
 
 # Model and processor setup
-model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft"
+# model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft3\checkpoint-4100"
+model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
 
+data_cfg_path = (
+    r"D:\work\实时对话\TET\train\config\dataset_cfg_mvbench.yml"  # for answer2
+)
 # data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval1.yml" # for answer1
-data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval2.yml" # for answer2
+# data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval2.yml" # for answer2
 data_cfg = load_data(data_cfg_path)
 TEST_SFT = False
-batch_size = 8
-# PROMPT_TYPE = "v1"  # 推理增强
-# PROMPT_TYPE = "v2" # 直接输出答案
-PROMPT_TYPE = "v3"  # 让模型关注关键帧
+batch_size = 16
+PROMPT_TYPE = "v1"  # 推理增强
+# PROMPT_TYPE = "v2"  # 直接输出答案
+# PROMPT_TYPE = "v3"  # 让模型关注关键帧
 
+OUTPUT_PATH = (
+    f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_mvb"  # for answer2
+)
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer1
-OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
+# OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
 
 # data_cfg = load_data(data_cfg_path)
-train_dataset, test_dataset, eval_dataset = generate_dataset(
-    data_cfg, prompt_type=PROMPT_TYPE
+test_dataset = generate_dataset(
+    data_cfg,
+    prompt_type=PROMPT_TYPE,
+    filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
+    split_test=True,
 )
 save_data(data_cfg, os.path.join(OUTPUT_PATH, "data_cfg.yml"))
 
@@ -54,6 +66,11 @@ processor = AutoProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
 processor.tokenizer.padding_side = "left"
 
+
+def calc_acc(sample):
+    return parse_multi_choice_response(sample["answer"]) == sample["truth"]
+
+
 for name, dataset in test_dataset.items():
     results_path = os.path.join(OUTPUT_PATH, f"result_{name}.jsonl")
     results = load_data(results_path) if os.path.exists(results_path) else {}
@@ -65,7 +82,7 @@ for name, dataset in test_dataset.items():
         if sample["qid"] not in results:
             return True
         sample = results[sample["qid"]]
-        acc[sample["qid"]] = sample["truth"] == sample["answer"].strip()[0]
+        acc[sample["qid"]] = calc_acc(sample)
         return False
 
     # Process batches
@@ -119,6 +136,7 @@ for name, dataset in test_dataset.items():
             )
 
             # Process each output in the batch
+
             for i, (output_text, qid, truth) in enumerate(
                 zip(output_texts, batch_data["qid"], batch_data["truth"])
             ):
@@ -127,14 +145,16 @@ for name, dataset in test_dataset.items():
                         output = format_output(output_text)
                     else:
                         output = {"answer": output_text}
+
                     cur = {
-                        "raw": output_text,
                         **output,
                         "truth": truth,
                         "qid": qid,
                     }
+                    if "keyframe" in batch_data:
+                        cur["gt_keyframe"] = batch_data["keyframe"][i]
                     writer.write(cur)
-                    acc[qid] = cur["answer"].strip()[0] == truth
+                    acc[qid] = calc_acc(cur)
                 except Exception as e:
                     print(f"❌ Error at {output_text}: {e}")
                     continue

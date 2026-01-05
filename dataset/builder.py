@@ -9,6 +9,7 @@ from .videomme import VideoMMEDataset
 from .intentqa import IntentQADataset
 from .mlvu import MLVUDataset
 from .longvideo import LongVideoDataset
+from .mvbench import MVBench
 
 def build_dataset(dataset_config, name, is_training=False):
     if isinstance(dataset_config, (Path, str)):

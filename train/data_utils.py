@@ -20,11 +20,12 @@ import random
 
 RAW_OPTIONS = list("ABCDEF")
 
+
 PROMPT = """
-Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON with 3 keys: "keyframe", "reason", "answer". You can use "start-end" as a shorthand for keyframes. Do not add comments:
+Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON with 3 keys: "reasoning", "keyframe",  "answer". Do not add comments:
 {{
-    "keyframe": "keyframe related to the question, e.g. 1-90, 183, 185",
-    "reason": "Provide a concise step-by-step analysis based on the visual information in the specified keyframes",
+    "reasoning": "Provide a list of concise step-by-step analysis based on the visual information in the specified keyframes",
+    "keyframes": "keyframe related to the question",
     "answer": "one from {options}"
 }}
 """
@@ -42,7 +43,7 @@ Based on the video, focus on the frame corresponding to {keyframe} and answer th
 """
 
 
-def format_data(sample, fps, test=False, prompt_type="v1"):
+def format_data(sample, test=False, prompt_type="v1"):
     """
     Format a single dataset sample into the required structure.
     """
@@ -51,15 +52,16 @@ def format_data(sample, fps, test=False, prompt_type="v1"):
     prompt = {"v1": PROMPT, "v2": PROMPT2, "v3": PROMPT3}[prompt_type]
     out = {}
     if not test:
-        assert "input_idx" in sample, "must provide input_idx for eval or train"
-    if "input_idx" in sample:
-        input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
+        assert "reasoning" in sample, "must provide reasoning for eval or train"
+    
+    if "reasoning" in sample:
+        input_index = sample["keyframe"]
         keyframe = compress_consecutive_numbers(input_index)
         if prompt_type == "v3":
             format_data_kwargs.update({"keyframe": keyframe})
 
         answer = {
-            "reason": sample["explain"],
+            "reasoning": sample["reasoning"],
             "keyrfame": keyframe,
             "answer": sample["truth"],
         }
@@ -73,9 +75,8 @@ def format_data(sample, fps, test=False, prompt_type="v1"):
                 {
                     "type": "video",
                     "video": sample["video_path"],
-                    "max_pixels": 160 * 120,
+                    "max_pixels": 640 * 480,
                     "min_pixels": 0,
-                    "fps": float(fps),
                     **start_end,
                 },
                 {
