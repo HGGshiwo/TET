@@ -26,6 +26,7 @@ import sys
 import contextlib
 from moviepy import VideoFileClip
 
+
 class DummyFile:
     def __init__(self, file):
         if file is None:
@@ -57,9 +58,9 @@ def save_data(data, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix == ".json":
-        json.dump(data, path.open("w", encoding='utf-8'), indent=4, allow_unicode=True)
+        json.dump(data, path.open("w", encoding="utf-8"), indent=4, allow_unicode=True)
     elif path.suffix == ".yml":
-        yaml.dump(data, path.open("w", encoding='utf-8'), indent=4, allow_unicode=True)
+        yaml.dump(data, path.open("w", encoding="utf-8"), indent=4, allow_unicode=True)
     else:
         path.write_text(data)
 
@@ -72,9 +73,10 @@ def load_data(path):
         return yaml.safe_load(path.open(encoding="utf-8"))
     elif path.suffix == ".parquet":
         import pyarrow.parquet as pq
+
         table = pq.read_table(path)
         df = table.to_pandas()
-        return df.to_dict(orient='records')
+        return df.to_dict(orient="records")
     elif path.suffix == ".jsonl":
         out = {}
         for value in jsonlines.open(path, "r"):
@@ -202,7 +204,7 @@ class QwenModel(nn.Module):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image", "image": i, "max_pixels": 1280*720},
+                            {"type": "image", "image": i, "max_pixels": 1280 * 720},
                             {"type": "text", "text": q},
                         ],
                     }
@@ -320,7 +322,7 @@ class APIModel:
             for frame in frames:
                 img = image2base64(frame)
                 content.append({"type": "image_url", "image_url": {"url": img}})
-        
+
         out = await self.client.chat.completions.create(
             model=self.model_name,
             messages=[{"role": "user", "content": content}],
@@ -359,6 +361,7 @@ def list2dict(path, level=1):
             input_data[key] = sorted(input_data[key].items(), key=lambda x: x[0])
     return input_data
 
+
 # def parse_json(pred, list=False):
 #     pred = pred.split("```json")[-1].split("```")[0]
 #     try:
@@ -376,9 +379,11 @@ def list2dict(path, level=1):
 #             return None
 #     return pred
 
+
 def remove_json_comments(s):
     # 去除 // 后面的内容
-    return re.sub(r'//.*', '', s)
+    return re.sub(r"//.*", "", s)
+
 
 def parse_json(pred, list=False):
     _raw = pred
@@ -398,7 +403,7 @@ def parse_json(pred, list=False):
             if list:
                 try:
                     pred = pred.replace("[", "").replace("]", "").split(",")
-                    pred = [pred.strip().replace("\"", "") for pred in pred]
+                    pred = [pred.strip().replace('"', "") for pred in pred]
                     return pred
                 except Exception as e2:
                     e = e2
@@ -460,6 +465,7 @@ def get_frame(video_path, fps: int, return_idx=False):
         return video, idx
     return video  # (C, H, W)
 
+
 def resize_image(img, width=640, height=480):
     w, h = img.size
 
@@ -472,9 +478,10 @@ def resize_image(img, width=640, height=480):
 
     img_resized = img.resize((new_w, new_h), Image.LANCZOS)
     return img_resized
-    
+
+
 def get_frame_by_idx(video_path, idx, fps=1):
-    vr = decord.VideoReader(str(video_path))
+    vr = decord.VideoReader(str(video_path), num_threads=1)
     origin_fps = vr.get_avg_fps()
     ratio = origin_fps / fps
     origin_idx = list(range(0, len(vr), int(ratio)))
@@ -484,9 +491,14 @@ def get_frame_by_idx(video_path, idx, fps=1):
     video = vr.get_batch(idx)
     video = video.cpu().numpy()
     video = [Image.fromarray(v) for v in video]
-    r_height, r_width = smart_resize(video[0].height, video[0].width, 1, 640*480, 1280*720)
-    video = [resize_image(m, r_width, r_height) for m in video] # only valid for videomme-long
+    r_height, r_width = smart_resize(
+        video[0].height, video[0].width, 1, 640 * 480, 1280 * 720
+    )
+    video = [
+        resize_image(m, r_width, r_height) for m in video
+    ]  # only valid for videomme-long
     return video  # (C, H, W)
+
 
 def get_video_size(video_path, fps=1):
     vr = decord.VideoReader(str(video_path))
@@ -497,11 +509,13 @@ def get_video_size(video_path, fps=1):
         origin_idx.append(len(vr) - 1)
     return len(origin_idx)
 
+
 def get_video_length(video_path):
     """return video lenght(in seconds)"""
     with VideoFileClip(video_path) as clip:
         duration = clip.duration
     return int(duration)
+
 
 class LazyFrameLoader:
     @classmethod
@@ -514,35 +528,35 @@ class LazyFrameLoader:
         if idx[-1] != len(vr) - 1:
             idx.append(len(vr) - 1)
         idx2 = list(range(len(idx)))
-        
+
         filter_set = set(ignore)
         # 使用zip配对两个列表的元素，过滤掉list1元素在filter中的项
         # 最后用zip(*)解包回两个列表
         filtered_pairs = [(a, b) for a, b in zip(idx, idx2) if b not in filter_set]
         idx, idx2 = zip(*filtered_pairs) if filtered_pairs else ([], [])
-    
+
         idx = chunk(idx, batch_size)
         idx2 = chunk(idx2, batch_size)
         return [cls(video_path, i, i2) for i, i2 in zip(idx, idx2)]
-    
+
     def __init__(self, path, idx, idx2):
         self._idx = idx
-        self.idx = idx2 # 以1fs为单位的索引
+        self.idx = idx2  # 以1fs为单位的索引
         self.path = path
         # self.vr = vr
 
     def __len__(self):
         return len(self.idx)
-    
+
     def load(self, return_idx=False):
-        vr = decord.VideoReader(str(self.path))
+        vr = decord.VideoReader(str(self.path), num_threads=1)
         video = vr.get_batch(self._idx)
         video = video.cpu().numpy()
         video = [Image.fromarray(v) for v in video]
         if return_idx:
             return video, self.idx
         return video  # (C, H, W)
-        
+
 
 def generate_table(row_names, data_dict, filter=True):
     # 获取列名
@@ -649,6 +663,7 @@ image_split = {
 #     out = out.permute(1, 2, 0).numpy().astype(np.uint8)
 #     out = Image.fromarray(out)
 #     return out
+
 
 def make_grid(image_list, max_frame=8, pad_width=10):
     assert len(image_list) <= max_frame, "Image list length exceeds max_frame"
@@ -906,10 +921,10 @@ def best_layout(n, w, h):
     return r, c
 
 
-def get_cfg(cfg_path: str|Path, idx=None):
+def get_cfg(cfg_path: str | Path, idx=None):
     step_name = ["obj", "dino", "select", "select2", "answer"]
     cur_step = Path(cfg_path).stem
-    if idx is None: # 根据文件名称推算是第几步
+    if idx is None:  # 根据文件名称推算是第几步
         idx = step_name.index(cur_step)
         if idx == -1:
             raise ValueError(f"Unknow step: {cur_step}")

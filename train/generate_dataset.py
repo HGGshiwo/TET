@@ -1,228 +1,134 @@
-import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import os
-from tqdm import tqdm
-
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
-from dataset.builder import build_dataset
-from dataset.base import BaseDataset
-from utils import get_video_length, get_video_size, load_data
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from runner import AsyncRunner
 
-from datasets import Dataset
+import asyncio
 
-from trl.trainer.utils import remove_none_values
-from train_utils import compress_consecutive_numbers, concatenate_datasets
-import random
+from utils import create_model, get_cfg
+from utils import parse_json
+from utils import load_data, save_data, print_cfg
+import os
 
-RAW_OPTIONS = list("ABCDEF")
 
 PROMPT = """
-Based on the video, answer the following question: {question}. Locate the keyframes relevant to the question, answer it, and provide the reasoning process. Output a JSON with 3 keys: "keyframe", "reason", "answer". You can use "start-end" as a shorthand for keyframes. Do not add comments:
+**Updated Instruction for COT Data Generation:**
+
+You are a data processing expert. Your task is to generate final Chain-of-Thought (COT) data based on the given input. The input consists of the following fields:
+- `raw question`: The original multiple-choice question.
+- `key object`: Key objects present in the video.
+- `frame select explain`: A detailed explanation of why specific video frames were selected.
+- `answer explain`: A step-by-step textual explanation for arriving at the correct answer.
+- `keyframe`: A list of key frame indices.
+- `answer`: The correct answer letter.
+
+Your output must be a JSON object containing exactly three keys: `"reasoning"`, `"keyframes"`, and `"answer"`.
+
+**Requirements:**
+1. **Content & Structure:**
+   - **`reasoning`:** An array of **3-6 concise reasoning steps**. Each step should be a single, coherent statement that forms part of a logical, continuous narrative.
+   - **`keyframes`:** An array of **3-8 selected key frame indices** (integers) from the input `keyframe` list. You must choose frames that provide the most critical visual evidence to answer the `raw question`. These should:
+     - Cover distinct, essential stages or concepts of the answer.
+     - Provide maximum information value with minimal redundancy.
+     - Be representative of key actions, states, relationships, or transitions mentioned in the `reasoning`.
+     - Do not simply output the first or last frames; choose frames that are substantively informative.
+   - **`answer`:** The correct answer letter (matching the input).
+
+2. **Reasoning Guidelines:**
+   - **First Step(s):** Start with direct observations that reference or are supported by the selected `keyframes`. Mention a few representative frame numbers to ground the reasoning.
+   - **Middle Step(s):** Build inferences by connecting observations to the question's core concepts (e.g., purpose, causality, relationships).
+   - **Final Step(s):** Explicitly evaluate and eliminate incorrect options, leading to the final answer. Option evaluation should be concise and integrated into the narrative.
+   - **General:** Remove redundant details, meta-commentary (e.g., "I observe that"), and process descriptions. Be direct and factual.
+
+3. **Core Principle:** The `reasoning` must be **self-contained** and **fully answer the `raw question`** using the logic and evidence synthesized from the inputs. The selected `keyframes` should visually substantiate the `reasoning`.
+
+**Output Example:**
+
+```json
 {{
-    "keyframe": "keyframe related to the question, e.g. 1-90, 183, 185",
-    "reason": "Provide a concise step-by-step analysis based on the visual information in the specified keyframes",
-    "answer": "one from {options}"
+  "reasoning": [
+    "Key frames (e.g., 7, 19) show C sieving grain, which cleans or sorts it.",
+    "Subsequent frames (116, 124) show her washing the grain in water, a typical preparatory step for cooking.",
+    "Finally, frame 178 shows the grain placed near a stove with a matchbox, indicating the cooking stage.",
+    "The entire sequence—sieving, washing, moving to stove—demonstrates that the objective is preparation for cooking, making D correct, while A and B are incomplete steps, C is a temporary state, and E is unsupported."
+  ],
+  "keyframes": [7, 19, 116, 124, 178],
+  "answer": "D"
 }}
+```
+**Input Data:**
+`raw question`: {question}
+`key object`: {key_object}
+`frame select explain`: {frame_select_explain}
+`answer explain`: {answer_explain}
+`keyframe`: {keyframe}
+`answer`: {answer}
 """
 
-PROMPT2 = """
-Based on the video, answer the following question: {question}. Output only one character from {options}
-"""
 
-PROMPT3 = """
-Based on the video, focus on the frame corresponding to {keyframe} and answer the following question: {question}. Output only one character from {options}.
-"""
+def frame_filter(runner, data):
+    qid = data["qid"]
+    _d = runner.step5_answer_data[qid]
+    return _d["truth"] == _d["answer"]
 
 
-def format_data(sample, fps, test=False, prompt_type="v1"):
-    """
-    Format a single dataset sample into the required structure.
-    """
-
-    input_index = sorted(set(map(lambda idx: int(idx * fps), sample["input_idx"])))
-    keyframe = compress_consecutive_numbers(input_index)
-    prompt = {"v1": PROMPT, "v2": PROMPT2, "v3": PROMPT3}[prompt_type]
-    options = "/".join(RAW_OPTIONS[: len(sample["options"])])
-    format_data_kwargs = {"question": sample["question"], "options": options}
-    if prompt_type == "v3":
-        format_data_kwargs.update({"keyframe": keyframe})
-    answer = {
-        "reason": sample["explain"],
-        "keyrfame": keyframe,
-        "answer": sample["truth"],
-    }
-
-    message = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "video",
-                    "video": sample["video_path"],
-                    "max_pixels": 160 * 120,
-                    "min_pixels": 0,
-                    "fps": float(fps),
-                },
-                {
-                    "type": "text",
-                    "text": prompt.format(**format_data_kwargs),
-                },
-            ],
-        },
-    ]
-    if not test:
-        message.append(
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(answer),
-                    }
-                ],
-            }
-        )
-    return {
-        "truth": sample["truth"],
-        "qid": sample["qid"],
-        "message": message,
-        "keyframe": keyframe,
-    }
-
-
-def split_dataset(dataset, test_rate, eval_rate, seed=1234):
-    """
-    split list of data to (train, test, eval)
-    """
-    train_rate = 1 - test_rate - eval_rate
-    assert train_rate <= 1, "test_rate + eval_rate must < 1"
-    random.seed(seed)
-    # 处理test_size：如果是比例，转换为整数
-    total = len(dataset)
-    test_size = int(total * test_rate)
-    eval_size = int(total * eval_rate)
-    train_size = total - test_size - eval_size
-
-    # 生成索引并洗牌
-    indices = list(range(total))
-    random.shuffle(indices)  # 基于固定种子洗牌
-
-    # 分割索引并提取对应元素
-    test_idx = indices[:test_size]
-    train_idx = indices[test_size : test_size + train_size]
-    eval_idx = indices[test_size + train_size :]
-
-    train_data = [dataset[idx] for idx in train_idx]
-    test_data = [dataset[idx] for idx in test_idx]
-    eval_data = [dataset[idx] for idx in eval_idx]
-
-    return train_data, test_data, eval_data
-
-
-def format_woker(sample, prompt_type, test=False, max_frame=100):
-    size = get_video_length(sample["video_path"])
-    fps = min(1, max_frame / size)
-    return format_data(sample, fps, test, prompt_type), fps
-
-
-def generate_dataset(
-    dataset_cfg,
-    dataset_config="./configs/dataset.yml",
-    prompt_type="v1",
-    max_frame=80,
-    filter=None,
-) :
-    """return (train dataset, test dataset, eval dataset)"""
-    train_dataset = {}
-    eval_dataset = {}
-    test_dataset = {}
-
-    for cfg in dataset_cfg:
-        dataset_name = cfg["name"]
-        answer_path = cfg["answer_path"]
-        test_rate = cfg["test_rate"]
-        eval_rate = cfg["eval_rate"]
-        dataset = build_dataset(
-            dataset_config=dataset_config, name=dataset_name, is_training=False
-        )
-
-        data_list = load_data(answer_path)
-        out = []
-        for raw_data in dataset:
-            qid = raw_data["qid"]
-            data = data_list.get(qid, None)
-            if data is None:
-                continue
-            if filter is not None and not filter(data):
-                continue
-            video_path = os.path.join(dataset.config.video_path, raw_data["video_path"])
-            sample = {**data, **raw_data, "video_path": video_path}
-            out.append(sample)
-
-        train, test, eval = split_dataset(out, test_rate=test_rate, eval_rate=eval_rate)
-
-        def run_task(data, desc, test):
-            out_list, fps_list = [], []
-            with ThreadPoolExecutor(max_workers=8) as executor:
-
-                futures = [
-                    executor.submit(format_woker, sample, prompt_type, test, max_frame)
-                    for sample in data
-                ]
-                for future in tqdm(futures, total=len(data), desc=desc):
-                    out, fps = future.result()
-                    out_list.append(out)
-                    fps_list.append(fps)
-            return out_list, fps_list
-
-        for name, data, result in zip(
-            ["train", "eval", "test"],
-            [train, eval, test],
-            [train_dataset, eval_dataset, test_dataset],
-        ):
-            data, out_fps = run_task(
-                data, f"format {dataset_name}[{name}]", name == "test"
-            )
-            print(f"{dataset_name}[{name}] fps: {np.mean(out_fps):.2f}")
-            result[dataset_name] = data
-
-    num_list = [
-        sum([len(v) for v in v.values()])
-        for v in [train_dataset, eval_dataset, test_dataset]
-    ]
-    for name, dataset, num in zip(
-        ["train", "eval", "test"], [train_dataset, eval_dataset, test_dataset], num_list
-    ):
-        print(f"{name} dataset: ")
-        for k, v in dataset.items():
-            print(f"{k}: {len(v)/num*100:.2f}%[{len(v)}/{num}]")
-
-    def list2dataset(data):
-        return Dataset.from_list(list(data)).with_transform(remove_none_values)
-
-    train_dataset = list2dataset([d for v in train_dataset.values() for d in v])
-    eval_dataset = list2dataset([d for v in eval_dataset.values() for d in v])
-    test_dataset = {key: list2dataset(value) for key, value in test_dataset.items()}
-
-    return train_dataset, test_dataset, eval_dataset
-
-
-def format_output(output):
+async def task(runner, **data):
     try:
-        out = json.loads(output)
-    except json.JSONDecodeError:
-        try:
-            out = output.split("{")[1].split("}")[0]
-            out = json.loads(f"{{{out}}}")
-        except Exception as e:
-            print(f"failed to decode json: {output}")
-            out = None
-    return out
+        qid = data["qid"]
+        format_kwargs = {}
+        format_kwargs["question"] = data["question"]
+        format_kwargs["key_object"] = runner.step1_obj_data[qid]
+        format_kwargs["frame_select_explain"] = [
+            "\n".join(
+                d["explain"] for d in runner.step4_select2_data[qid]["raw_output"]
+            )
+        ]
+        format_kwargs["answer_explain"] = runner.step5_answer_data[qid]["explain"]
+        format_kwargs["keyframe"] = runner.step5_answer_data[qid]["input_idx"]
+        format_kwargs["answer"] = runner.step5_answer_data[qid]["truth"]
+
+        _prompt = PROMPT.format(**format_kwargs)
+        out = await model.forward(_prompt)
+        out = parse_json(out)
+    except Exception as e:
+        print(e)
+        out = None
+    if out is not None:
+        return {"qid": data["qid"], **out}
+    return None
 
 
-def parse_multi_choice_response(data):
-    return BaseDataset.parse_multi_choice_response(data)
+if __name__ == "__main__":
+
+    cfg = load_data(Path(__file__).parent.joinpath("./config/generate_dataset.yml"))
+    exp_name = cfg["exp_name"]
+    print_cfg(cfg)
+    model_name = cfg["model_name"]
+    save_data(
+        cfg,
+        Path(__file__).parent.joinpath(f"./outputs/{exp_name}/generate_dataset.yml"),
+    )
+
+    output_dir = Path(__file__).parent.joinpath(f"./outputs/{exp_name}")
+    model = create_model("api", model_name)
+
+    data_path = Path(__file__).parent.parent.joinpath("outputs")
+    for answer_path in cfg["answer_path"]:
+        obj_cfg, dino_cfg, select_cfg, select2_cfg, answer_cfg = get_cfg(answer_path)
+        dataset_name = obj_cfg["dataset_name"]
+        output_path = os.path.join(output_dir, f"{dataset_name}.jsonl")
+        runner = AsyncRunner(
+            task, output_path, iter_key="qid", dataset=dataset_name, filter=frame_filter
+        )
+        runner.step1_obj_data = load_data(
+            data_path.joinpath(obj_cfg["exp_name"], "obj.jsonl")
+        )
+        # runner.step3_select_data = load_data(data_path.joinpath(select_cfg['exp_name'], "select.jsonl"))
+        runner.step4_select2_data = load_data(
+            data_path.joinpath(select2_cfg["exp_name"], "select2.jsonl")
+        )
+        runner.step5_answer_data = load_data(
+            data_path.joinpath(answer_cfg["exp_name"], "answer.jsonl")
+        )
+        asyncio.run(runner())

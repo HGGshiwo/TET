@@ -55,14 +55,14 @@ def format_data(sample, test=False, prompt_type="v1"):
         assert "reasoning" in sample, "must provide reasoning for eval or train"
     
     if "reasoning" in sample:
-        input_index = sample["keyframe"]
+        input_index = sample["keyframes"]
         keyframe = compress_consecutive_numbers(input_index)
         if prompt_type == "v3":
             format_data_kwargs.update({"keyframe": keyframe})
 
         answer = {
             "reasoning": sample["reasoning"],
-            "keyrfame": keyframe,
+            "keyrfames": keyframe,
             "answer": sample["truth"],
         }
         out["keyframe"] = keyframe
@@ -75,7 +75,7 @@ def format_data(sample, test=False, prompt_type="v1"):
                 {
                     "type": "video",
                     "video": sample["video_path"],
-                    "max_pixels": 640 * 480,
+                    "max_pixels": 160 * 120,
                     "min_pixels": 0,
                     **start_end,
                 },
@@ -141,10 +141,8 @@ def split_dataset(dataset, test_rate, eval_rate, seed=1234):
     return train_data, test_data, eval_data
 
 
-def format_woker(sample, prompt_type, test=False, max_frame=100):
-    size = get_video_length(sample["video_path"])
-    fps = min(1, max_frame / size)
-    return format_data(sample, fps, test, prompt_type), fps
+def format_woker(sample, prompt_type, test=False):
+    return format_data(sample,  test, prompt_type)
 
 
 def generate_dataset(
@@ -191,21 +189,22 @@ def generate_dataset(
 
         def run_task(data, desc, test):
             out_list, fps_list = [], []
+            if len(data) == 0:
+                return out_list
             with ThreadPoolExecutor(max_workers=8) as executor:
 
                 futures = [
-                    executor.submit(format_woker, sample, prompt_type, test, max_frame)
+                    executor.submit(format_woker, sample, prompt_type, test)
                     for sample in data
                 ]
                 for future in tqdm(futures, total=len(data), desc=desc):
                     try:
-                        out, fps = future.result()
+                        out = future.result()
                         out_list.append(out)
-                        fps_list.append(fps)
                     except Exception as e:
                         import traceback
                         traceback.print_exc()
-            return out_list, fps_list
+            return out_list
 
         for name, data, result in zip(
             ["train", "eval", "test"],
@@ -216,10 +215,10 @@ def generate_dataset(
                 continue
             if not split_test and name == "test":
                 continue
-            data, out_fps = run_task(
+            data = run_task(
                 data, f"format {dataset_name}[{name}]", name == "test"
             )
-            print(f"{dataset_name}[{name}] fps: {np.mean(out_fps):.2f}")
+            # print(f"{dataset_name}[{name}] fps: {np.mean(out_fps):.2f}")
             result[dataset_name] = data
 
     num_list = [

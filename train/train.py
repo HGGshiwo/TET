@@ -9,15 +9,15 @@ from peft import LoraConfig, get_peft_model
 from trl import SFTConfig, SFTTrainer
 
 from train_utils import process_vision_info
-from generate_dataset import generate_dataset, parse_multi_choice_response
+from data_utils import generate_dataset, parse_multi_choice_response
 from utils import load_data
 
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4"
-EPOCH_NUM = 4
-PROMPT_TYPE = "v2"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft6"
+EPOCH_NUM = 5
+PROMPT_TYPE = "v1"
 
 def min_nonzero_pos(x):
     """x: mask, shape of (batch_size, sequence)
@@ -78,7 +78,7 @@ data_cfg = load_data(data_cfg_path)
 train_dataset, eval_dataset = generate_dataset(
     dataset_cfg=data_cfg,
     prompt_type=PROMPT_TYPE,
-    filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
+    # filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
     split_test=False,
 )
 
