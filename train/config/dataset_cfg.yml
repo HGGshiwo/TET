@@ -1,14 +1,10 @@
 - name: mvbench_test
-  test_rate: 1
-  eval_rate: 0
-
-- name: egoschema_subset
-  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test3\answer.jsonl
   test_rate: 0.3
   eval_rate: 0.1
+  answer_path: D:\work\实时对话\TET\train\outputs\cot0104\mvbench_test.jsonl
 
 - name: nextmc_test
-  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_nextmc\answer.jsonl
+  answer_path: D:\work\实时对话\TET\train\outputs\cot0104\nextmc_test.jsonl
   test_rate: 0.3
   eval_rate: 0.1
 
@@ -23,17 +19,24 @@
 #   eval_rate: 0.1
 
 - name: videomme_short
-  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_videomme_short\answer.jsonl
+  answer_path: D:\work\实时对话\TET\train\outputs\cot0104\videomme_short.jsonl
   test_rate: 0.3
   eval_rate: 0.1
 
 - name: intentqa_test
-  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_intentqa\answer.jsonl
+  answer_path: D:\work\实时对话\TET\train\outputs\cot0104\intentqa_test.jsonl
   test_rate: 0.3
   eval_rate: 0.1
 
 - name: mlvu_test
-  answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_mlvu\answer.jsonl
-  test_rate: 0.3
-  eval_rate: 0.1
+  # answer_path: D:\work\实时对话\TET\train\outputs\cot0104\mlvu_test.jsonl
+  test_rate: 1
+  eval_rate: 0
+  max_frames: 80
+
+- name: egoschema_subset
+  # answer_path: D:\work\实时对话\TET\train\outputs\cot0104\egoschema_subset.jsonl
+  test_rate: 1
+  eval_rate: 0
+  max_frames: 80
 

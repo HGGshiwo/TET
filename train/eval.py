@@ -1,13 +1,14 @@
-import jsonlines
 import torch
 import os
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
-from generate_dataset import (
+from data_utils import (
+    Prompt,
     generate_dataset,
-    format_output,
     parse_multi_choice_response,
+    JSONLStorage,
+    prepare_inputs,
 )
-from train_utils import process_vision_info
+
 from transformers import BitsAndBytesConfig
 from peft import PeftModel, PeftConfig
 import numpy as np
@@ -16,23 +17,26 @@ from utils import load_data, save_data
 
 # Model and processor setup
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft3\checkpoint-4100"
-model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
+# model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
+# model_id = r"D:\work\实时对话\TET\train\outputs\sft6\checkpoint-4700"
+model_id = r'D:\work\实时对话\TET\train\outputs\sft7\checkpoint-4800'
+# model_id = r"D:\models\Video-R1-7B"
 
-data_cfg_path = (
-    r"D:\work\实时对话\TET\train\config\dataset_cfg_mvbench.yml"  # for answer2
-)
+data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"  # for answer2
 # data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval1.yml" # for answer1
 # data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg_eval2.yml" # for answer2
 data_cfg = load_data(data_cfg_path)
-TEST_SFT = False
-batch_size = 16
+
+R1_MODEL = False
+TEST_SFT = True
+
+batch_size = 8
 PROMPT_TYPE = "v1"  # 推理增强
 # PROMPT_TYPE = "v2"  # 直接输出答案
 # PROMPT_TYPE = "v3"  # 让模型关注关键帧
+# PROMPT_TYPE = "r1"
 
-OUTPUT_PATH = (
-    f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_mvb"  # for answer2
-)
+OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval"  # for answer2
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer1
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
 
@@ -40,7 +44,6 @@ OUTPUT_PATH = (
 test_dataset = generate_dataset(
     data_cfg,
     prompt_type=PROMPT_TYPE,
-    filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
     split_test=True,
 )
 save_data(data_cfg, os.path.join(OUTPUT_PATH, "data_cfg.yml"))
@@ -53,15 +56,26 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16,
 )
 
-config = PeftConfig.from_pretrained(model_id)
-model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    config.base_model_name_or_path,
-    device_map="auto",
-    torch_dtype=torch.bfloat16,
-    quantization_config=bnb_config,
-)
-if TEST_SFT:
-    model = PeftModel.from_pretrained(model, model_id)
+if R1_MODEL:
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_id, 
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
+        use_cache=True
+    )
+    
+else:
+    config = PeftConfig.from_pretrained(model_id)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        config.base_model_name_or_path,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
+    )
+    if TEST_SFT:
+        model = PeftModel.from_pretrained(model, model_id)
+        
 processor = AutoProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
 processor.tokenizer.padding_side = "left"
@@ -73,48 +87,28 @@ def calc_acc(sample):
 
 for name, dataset in test_dataset.items():
     results_path = os.path.join(OUTPUT_PATH, f"result_{name}.jsonl")
-    results = load_data(results_path) if os.path.exists(results_path) else {}
-    writer = jsonlines.open(results_path, "a")
+    storage = JSONLStorage(results_path, "qid")
 
     acc = {}
 
     def filter(sample):
-        if sample["qid"] not in results:
+        if not storage.has(sample["qid"]):
             return True
-        sample = results[sample["qid"]]
+        if "error" in storage.get(sample["qid"]):
+            storage.delete(sample["qid"])
+            return True
+        sample = storage.get(sample["qid"])
         acc[sample["qid"]] = calc_acc(sample)
         return False
 
     # Process batches
     test_dataset_batched = dataset.filter(filter).batch(batch_size)
+    storage.write_all()
     for batch_idx, batch_data in enumerate(
         tqdm(test_dataset_batched, desc=f"test {name}")
     ):
         try:
-            # Apply chat template to all messages in batch
-            texts = [
-                processor.apply_chat_template(
-                    msg, tokenize=False, add_generation_prompt=True
-                )
-                for msg in batch_data["message"]
-            ]
-
-            # Process image/video inputs for all samples in batch
-            batch_image_inputs = []
-            batch_video_inputs = []
-            for msg in batch_data["message"]:
-                image_inputs, video_inputs = process_vision_info(msg)
-                batch_image_inputs.append(image_inputs)
-                batch_video_inputs.append(video_inputs)
-
-            # Prepare inputs with padding
-            inputs = processor(
-                text=texts,
-                videos=batch_video_inputs,
-                return_tensors="pt",
-                padding=True,  # Add padding for batch processing
-            ).to("cuda")
-
+            inputs = prepare_inputs(processor, batch_data, add_generation_prompt=True).to("cuda")
             # Generate responses for the entire batch
             generated_ids = model.generate(
                 **inputs,
@@ -136,16 +130,12 @@ for name, dataset in test_dataset.items():
             )
 
             # Process each output in the batch
-
+            prompt = Prompt.create(PROMPT_TYPE)
             for i, (output_text, qid, truth) in enumerate(
                 zip(output_texts, batch_data["qid"], batch_data["truth"])
             ):
                 try:
-                    if PROMPT_TYPE == "v1":
-                        output = format_output(output_text)
-                    else:
-                        output = {"answer": output_text}
-
+                    output = prompt.format_output(output_text)
                     cur = {
                         **output,
                         "truth": truth,
@@ -153,13 +143,15 @@ for name, dataset in test_dataset.items():
                     }
                     if "keyframe" in batch_data:
                         cur["gt_keyframe"] = batch_data["keyframe"][i]
-                    writer.write(cur)
+                    storage.write(cur)
                     acc[qid] = calc_acc(cur)
                 except Exception as e:
-                    print(f"❌ Error at {output_text}: {e}")
+                    storage.write({"qid": qid, "output": output_text, "error": str(e)})
                     continue
         except Exception as e:
-            print(f"❌ Error at batch {batch_idx}: {e}")
+            import traceback
+
+            traceback.print_exc()
     acc = list(acc.values())
     acc = np.array(acc)
     acc_value = acc.mean() if len(acc) != 0 else 0

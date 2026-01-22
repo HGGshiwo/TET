@@ -1,0 +1,3 @@
+- name: mvbench_test
+  test_rate: 1
+  eval_rate: 0

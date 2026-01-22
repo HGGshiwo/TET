@@ -1,0 +1,10 @@
+
+exp_name: cot0104
+model_name: gpt-4.1-2025-04-14
+answer_path:
+  - D:\work\实时对话\TET\outputs\qwenvl_test3\answer.yml
+  - D:\work\实时对话\TET\outputs\qwenvl_test_nextmc\answer.yml
+  - D:\work\实时对话\TET\outputs\qwenvl_test_videomme_short\answer.yml
+  - D:\work\实时对话\TET\outputs\qwenvl_test_intentqa\answer.yml
+  - D:\work\实时对话\TET\outputs\qwenvl_test_mlvu\answer.yml
+  - D:\work\实时对话\TET\outputs\qwenvl_test_mvbench\answer.yml

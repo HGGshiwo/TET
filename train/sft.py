@@ -1,4 +1,5 @@
 # https://connectaman.hashnode.dev/fine-tuning-the-qwen25-7b-vl-instruct-model-a-comprehensive-guide
+import numpy as np
 import torch
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
@@ -8,15 +9,14 @@ from transformers import (
 from peft import LoraConfig, get_peft_model
 from trl import SFTConfig, SFTTrainer
 
-from train_utils import process_vision_info
-from data_utils import generate_dataset, parse_multi_choice_response
+from data_utils import generate_dataset, parse_multi_choice_response, prepare_inputs
 from utils import load_data
 
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft6"
-EPOCH_NUM = 5
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft7"
+EPOCH_NUM = 3
 PROMPT_TYPE = "v1"
 
 def min_nonzero_pos(x):
@@ -40,20 +40,7 @@ def collate_fn(examples):
     tokenizes the inputs, and creates labels with proper masking.
     """
     # Apply chat template to each example (no tokenization here)
-    examples = [example["message"] for example in examples]
-    texts = [
-        processor.apply_chat_template(example, tokenize=False) for example in examples
-    ]
-    # Process visual inputs for each example
-    video_input = [process_vision_info(example)[1] for example in examples]
-
-    # Tokenize texts and images into tensors with padding
-    batch = processor(
-        text=texts,
-        videos=video_input,
-        return_tensors="pt",
-        padding=True,
-    )
+    batch = prepare_inputs(processor, examples, add_generation_prompt=False)
 
     # Create labels by cloning input_ids and mask the pad tokens
     labels = batch["input_ids"].clone()
