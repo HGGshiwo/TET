@@ -54,6 +54,7 @@ model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     device_map="auto",
     torch_dtype=torch.bfloat16,
     quantization_config=bnb_config,
+    use_cache=True,
 )
 processor = Qwen2_5_VLProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
