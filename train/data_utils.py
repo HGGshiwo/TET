@@ -217,7 +217,7 @@ def format_data(sample, test=False, prompt_type="v1"):
 
         answer = {
             "reasoning": sample["reasoning"],
-            "keyrfames": keyframe,
+            "keyframes": keyframe,
             "answer": sample["truth"],
         }
         out["keyframe"] = keyframe
@@ -412,7 +412,7 @@ def generate_dataset(
         return test_dataset
 
 
-def format_output(output):
+def format_output(output: str) -> Dict[str, Any]:
     try:
         out = json.loads(output)
     except json.JSONDecodeError:

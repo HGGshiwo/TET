@@ -9,7 +9,7 @@ from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     Qwen2_5_VLProcessor,
 )
-from data_utils import generate_dataset, parse_multi_choice_response, prepare_inputs
+from data_utils import format_output, generate_dataset, parse_multi_choice_response, prepare_inputs
 from utils import load_data
 from peft import LoraConfig, get_peft_model
 from grpo_trainer import GRPOConfig, Qwen2VLGRPOTrainer
@@ -110,13 +110,14 @@ training_args = GRPOConfig(
 def format_reward(completions: list, **kwargs):
     """Reward function that checks if the completion has a specific format."""
     results = []
-    for content in completions:
+    for completion in completions:
+        content = completion[0]['content']
         reward = 0
         try:
-            res = json.loads(content)
+            res = format_output(content)
             if (
                 isinstance(res.get("reasoning"), list)
-                and res.get("keyframe") is not None
+                and res.get("keyframes") is not None
                 and res.get("answer") is not None
             ):
                 reward = 0.5
@@ -131,9 +132,10 @@ def accuracy_reward(completions: list[list[dict[str, str]]], truth: list[str], *
     rewards = []
 
     for completion, sol in zip(completions, truth):
+        content = completion[0]['content']
         reward = 0
         try:
-            answer = json.loads(completion)["answer"]
+            answer = format_output(content)["answer"]
             if parse_multi_choice_response(answer) == sol:
                 reward = 1
         except Exception:
