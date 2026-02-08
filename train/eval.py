@@ -1,3 +1,4 @@
+import tokenize
 import torch
 import os
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
@@ -19,7 +20,7 @@ from utils import load_data, save_data
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft3\checkpoint-4100"
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
 # model_id = r"D:\work\实时对话\TET\train\outputs\sft6\checkpoint-4700"
-model_id = r'D:\work\实时对话\TET\train\outputs\sft7\checkpoint-4800'
+model_id = r'D:\work\实时对话\TET\train\outputs\sft2'
 # model_id = r"D:\models\Video-R1-7B"
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"  # for answer2
@@ -31,7 +32,8 @@ R1_MODEL = False
 TEST_SFT = True
 
 batch_size = 8
-PROMPT_TYPE = "v1"  # 推理增强
+# PROMPT_TYPE = "v1"  # 推理增强
+PROMPT_TYPE = "v1_5"  # 推理增强
 # PROMPT_TYPE = "v2"  # 直接输出答案
 # PROMPT_TYPE = "v3"  # 让模型关注关键帧
 # PROMPT_TYPE = "r1"
@@ -40,10 +42,11 @@ OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval"  # f
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer1
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
 
+prompt = Prompt.create(PROMPT_TYPE)
 # data_cfg = load_data(data_cfg_path)
 test_dataset = generate_dataset(
     data_cfg,
-    prompt_type=PROMPT_TYPE,
+    prompt=prompt,
     split_test=True,
 )
 save_data(data_cfg, os.path.join(OUTPUT_PATH, "data_cfg.yml"))
@@ -55,6 +58,10 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",
     bnb_4bit_compute_dtype=torch.bfloat16,
 )
+
+processor = AutoProcessor.from_pretrained(model_id)
+# Set padding side to left for decoder-only architecture
+processor.tokenizer.padding_side = "left"
 
 if R1_MODEL:
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -73,13 +80,11 @@ else:
         torch_dtype=torch.bfloat16,
         quantization_config=bnb_config,
     )
+    if len(processor.tokenizer) != model.get_output_embeddings().out_features:
+        model.resize_token_embeddings(len(processor.tokenizer))
     if TEST_SFT:
         model = PeftModel.from_pretrained(model, model_id)
         
-processor = AutoProcessor.from_pretrained(model_id)
-# Set padding side to left for decoder-only architecture
-processor.tokenizer.padding_side = "left"
-
 
 def calc_acc(sample):
     return parse_multi_choice_response(sample["answer"]) == sample["truth"]
@@ -130,7 +135,6 @@ for name, dataset in test_dataset.items():
             )
 
             # Process each output in the batch
-            prompt = Prompt.create(PROMPT_TYPE)
             for i, (output_text, qid, truth) in enumerate(
                 zip(output_texts, batch_data["qid"], batch_data["truth"])
             ):

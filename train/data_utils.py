@@ -1,4 +1,5 @@
-from typing import Optional, Union, Tuple, List, Any, Dict
+from shlex import join
+from typing import Callable, Optional, Union, Tuple, List, Any, Dict
 import time
 
 
@@ -87,6 +88,7 @@ from trl.trainer.utils import remove_none_values
 from train_utils import compress_consecutive_numbers, concatenate_datasets
 import random
 import textwrap
+import re
 
 RAW_OPTIONS = list("ABCDEF")
 
@@ -96,6 +98,11 @@ class Prompt:
 
     def __init_subclass__(cls):
         cls.prompt_map[cls.version] = cls
+
+    @classmethod
+    def get_special_tokens(cls):
+        """需要添加的special tokens"""
+        return []
 
     @classmethod
     def create(cls, version: str) -> "Prompt":
@@ -123,7 +130,6 @@ class Prompt:
 
 class PromptV1(Prompt):
     version = "v1"
-    build_keys = ["question", "options"]
 
     @classmethod
     def build(cls, question, options):
@@ -153,6 +159,54 @@ class PromptV1(Prompt):
     @classmethod
     def get_gt(cls, item: dict):
         return json.dumps(item)
+
+
+class PromptV1_5(Prompt):
+    version = "v1_5"
+    split_token = "<split>"
+    step_split_token = "<step_split>"
+
+    @classmethod
+    def get_special_tokens(cls):
+        return [cls.split_token, cls.step_split_token]
+
+    @classmethod
+    def build(cls, question, options):
+        PROMPT = """
+        Based on the video, answer the question: {question}
+        **Output Rules**:
+        1. Split Reasoning, Keyframe, Answer with {split_token}
+        2. Reasoning: Step-by-step analysis, separated by {step_split_token}
+        3. Keyframe: Frame/timestamp related to the question
+        4. Answer: EXACTLY one option from {options}
+
+        **Output Example**:
+        Reasoning step1{step_split_token}step2{split_token}Keyframe: 15,17,20,23{split_token}Answer: [Option from {options}]
+        """
+        return cls.strip(PROMPT).format(
+            question=question,
+            options=options,
+            step_split_toke=cls.step_split_toke,
+            split_token=cls.split_token,
+        )
+
+    @classmethod
+    def format_output(cls, output: str):
+        out = {}
+        split_out = output.split(cls.split_token)
+        if len(split_out) != 3:
+            out = {"error": "num of output is not equal to 3", "raw": output}
+        else:
+            out["reasoning"] = split_out[0].split(cls.step_split_token)
+            out["keyframes"] = split_out[1]
+            out["answer"] = split_out[2]
+        return out
+
+    @classmethod
+    def get_gt(cls, item: dict):
+        reasoning = cls.step_split_token.join(item["reasoning"])
+        out = cls.split_token.join([reasoning, item["keyframes"], item["answer"]])
+        return out
 
 
 class PromptV2(Prompt):
@@ -198,13 +252,12 @@ class PromptR1(Prompt):
         return {"reasoning": out[0], "answer": out[1].replace("</answer>", "")}
 
 
-def format_data(sample, test=False, prompt_type="v1"):
+def format_data(sample, prompt: Prompt, test=False):
     """
     Format a single dataset sample into the required structure.
     """
     options = "/".join(RAW_OPTIONS[: len(sample["options"])])
     format_data_kwargs = {"question": sample["question"], "options": options}
-    prompt = Prompt.create(prompt_type)
     out = {}
     if not test:
         assert "reasoning" in sample, "must provide reasoning for eval or train"
@@ -296,16 +349,16 @@ def split_dataset(dataset, test_rate, eval_rate, seed=1234):
     return train_data, test_data, eval_data
 
 
-def format_woker(sample, prompt_type, test=False):
-    return format_data(sample, test, prompt_type)
+def format_woker(sample: Dict[str, Any], prompt: Prompt, test: bool = False):
+    return format_data(sample, prompt, test)
 
 
 def generate_dataset(
-    dataset_cfg,
-    dataset_config="./configs/dataset.yml",
-    prompt_type="v1",
-    filter=None,
-    split_test=False,
+    dataset_cfg: Dict[Any, str],
+    prompt: Prompt,
+    dataset_config: str = "./configs/dataset.yml",
+    filter: Optional[Callable] = None,
+    split_test: Optional[bool] = False,
 ):
     """return (train dataset, test dataset, eval dataset)"""
     train_dataset = {}
@@ -358,7 +411,7 @@ def generate_dataset(
             with ThreadPoolExecutor(max_workers=8) as executor:
 
                 futures = [
-                    executor.submit(format_woker, sample, prompt_type, test)
+                    executor.submit(format_woker, sample, prompt, test)
                     for sample in data
                 ]
                 for future in tqdm(futures, total=len(data), desc=desc):
