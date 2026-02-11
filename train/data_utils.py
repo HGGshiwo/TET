@@ -186,7 +186,7 @@ class PromptV1_5(Prompt):
         return cls.strip(PROMPT).format(
             question=question,
             options=options,
-            step_split_toke=cls.step_split_toke,
+            step_split_token=cls.step_split_token,
             split_token=cls.split_token,
         )
 

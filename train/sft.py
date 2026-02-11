@@ -163,7 +163,7 @@ if len(special_tokens) != 0:
     print(f"add additional tokens: {special_tokens}")
     processor.tokenizer.add_tokens(special_tokens)
     model.resize_token_embeddings(len(processor.tokenizer))
-    trainable_token_indices = tokenizer.convert_tokens_to_ids(special_tokens)
+    trainable_token_indices = processor.tokenizer.convert_tokens_to_ids(special_tokens)
 
 # Configure LoRA for model adaptation
 peft_config = LoraConfig(
@@ -171,9 +171,8 @@ peft_config = LoraConfig(
     lora_dropout=0.05,
     r=16,
     bias="none",
-    target_modules=["q_proj", "v_proj"],
+    target_modules=["q_proj", "v_proj", "lm_head"],
     task_type="CAUSAL_LM",
-    modules_to_save=["lm_head"],
     trainable_token_indices=trainable_token_indices,
 )
 

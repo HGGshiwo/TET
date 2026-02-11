@@ -19,7 +19,7 @@ data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\work\实时对话\TET\train\outputs\sft7-4800-merge"
 
 OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft7-4800-merge-r1"
-PROMPT_TYPE = "v1"
+PROMPT_TYPE = "v1_5"
 EPOCH_NUM = 3
 
 data_cfg = load_data(data_cfg_path)
