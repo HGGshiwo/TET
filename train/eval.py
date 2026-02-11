@@ -20,7 +20,7 @@ from utils import load_data, save_data
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft3\checkpoint-4100"
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
 # model_id = r"D:\work\实时对话\TET\train\outputs\sft6\checkpoint-4700"
-model_id = r'D:\work\实时对话\TET\train\outputs\sft2'
+model_id = r'D:\work\实时对话\TET\train\outputs\sft'
 # model_id = r"D:\models\Video-R1-7B"
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"  # for answer2
@@ -32,8 +32,8 @@ R1_MODEL = False
 TEST_SFT = True
 
 batch_size = 8
-# PROMPT_TYPE = "v1"  # 推理增强
-PROMPT_TYPE = "v1_5"  # 推理增强
+PROMPT_TYPE = "v1"  # 推理增强
+# PROMPT_TYPE = "v1_5"  # 推理增强
 # PROMPT_TYPE = "v2"  # 直接输出答案
 # PROMPT_TYPE = "v3"  # 让模型关注关键帧
 # PROMPT_TYPE = "r1"

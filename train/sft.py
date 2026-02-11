@@ -16,12 +16,13 @@ from data_utils import (
     parse_multi_choice_response,
     prepare_inputs,
 )
+from train.trainer.sft_trainer import GroupRLSFTTrainer
 from utils import load_data
 from copy import deepcopy
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft3"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft4"
 EPOCH_NUM = 3
 PROMPT_TYPE = "v1_5"
 
@@ -189,8 +190,8 @@ training_args = SFTConfig(
     gradient_accumulation_steps=4,  # Number of steps to accumulate gradients
     gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
     optim="adamw_torch_fused",  # Optimizer type
-    learning_rate=2e-4,  # Learning rate for training
-    lr_scheduler_type="constant",  # Learning rate scheduler type
+    learning_rate=1e-4,  # Learning rate for training
+    lr_scheduler_type="cosine",  # Learning rate scheduler type
     logging_steps=10,  # Interval (in steps) for logging
     eval_steps=100,  # Interval (in steps) for evaluation
     eval_strategy="steps",  # Evaluation strategy
@@ -202,7 +203,7 @@ training_args = SFTConfig(
     bf16=True,  # Use bfloat16 precision
     tf32=True,  # Use TensorFloat-32 precision
     max_grad_norm=0.3,  # Maximum gradient norm for clipping
-    warmup_ratio=0.03,  # Warmup ratio for learning rate scheduler
+    warmup_ratio=0.1,  # Warmup ratio for learning rate scheduler
     report_to="tensorboard",  # Reporting via Weights & Biases
     push_to_hub=False,  # Do not push the model to Hugging Face Hub
     gradient_checkpointing_kwargs={
@@ -216,8 +217,11 @@ training_args = SFTConfig(
 # Do not remove unused columns from the dataset
 training_args.remove_unused_columns = False
 
+
+
+
 # Create the trainer for fine-tuning the model
-trainer = SFTTrainer(
+trainer = GroupRLSFTTrainer(
     model=peft_model,
     args=training_args,
     train_dataset=train_dataset,
