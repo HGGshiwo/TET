@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 import torch
 import torch.nn as nn
@@ -8,6 +9,11 @@ from transformers.trainer import is_sagemaker_mp_enabled
 
 if is_sagemaker_mp_enabled():
     import smdistributed.modelparallel.torch as smp
+
+
+@dataclass
+class GroupRLSFTConfig(SFTConfig):
+    lm_head_rl_rate: int = 2  # lm_head学习率是基础学习率的倍数
 
 
 class GroupRLSFTTrainer(SFTTrainer):
@@ -25,7 +31,7 @@ class GroupRLSFTTrainer(SFTTrainer):
             # 1. 基础配置：获取权重衰减参数名 + 定义分层学习率（可根据需求调整）
             decay_parameters = self.get_decay_parameter_names(opt_model)
             # 核心：定义lm_head的学习率（建议为其他参数的3-5倍）
-            lm_head_lr = self.args.learning_rate * 4  # 可根据实际情况调整倍数
+            lm_head_lr = self.args.learning_rate * self.args.lm_head_rl_rate  # 可根据实际情况调整倍数
             base_lr = self.args.learning_rate
 
             # 2. 拆分参数组：
@@ -33,64 +39,27 @@ class GroupRLSFTTrainer(SFTTrainer):
             # - 组2: lm_head参数 + 无权重衰减
             # - 组3: 其他参数 + 有权重衰减
             # - 组4: 其他参数 + 无权重衰减
+            optimizer_grouped_parameters = [[] for _ in range(4)]
+            for n, p in opt_model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if "lm_head" in n:
+                    idx = 0 if n in decay_parameters else 1
+                    optimizer_grouped_parameters[idx].append(p)
+                else:
+                    idx = 2 if n in decay_parameters else 3
+                    optimizer_grouped_parameters[idx].append(p)
+            lr = [lm_head_lr, lm_head_lr, base_lr, base_lr]
+            weight_decay = [self.args.weight_decay, 0, self.args.weight_decay, 0]
             optimizer_grouped_parameters = [
-                # lm_head 有weight decay
-                {
-                    "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if (
-                            n.startswith("lm_head")
-                            and n in decay_parameters
-                            and p.requires_grad
-                        )
-                    ],
-                    "weight_decay": self.args.weight_decay,
-                    "lr": lm_head_lr,  # lm_head专属学习率
-                },
-                # lm_head 无weight decay
-                {
-                    "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if (
-                            n.startswith("lm_head")
-                            and n not in decay_parameters
-                            and p.requires_grad
-                        )
-                    ],
-                    "weight_decay": 0.0,
-                    "lr": lm_head_lr,  # lm_head专属学习率
-                },
-                # 其他参数 有weight decay
-                {
-                    "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if (
-                            not n.startswith("lm_head")
-                            and n in decay_parameters
-                            and p.requires_grad
-                        )
-                    ],
-                    "weight_decay": self.args.weight_decay,
-                    "lr": base_lr,  # 基础学习率（Q/V层LoRA等）
-                },
-                # 其他参数 无weight decay
-                {
-                    "params": [
-                        p
-                        for n, p in opt_model.named_parameters()
-                        if (
-                            not n.startswith("lm_head")
-                            and n not in decay_parameters
-                            and p.requires_grad
-                        )
-                    ],
-                    "weight_decay": 0.0,
-                    "lr": base_lr,  # 基础学习率（Q/V层LoRA等）
-                },
+                dict(lr=_lr, weight_decay=_wd, params=_param)
+                for _lr, _wd, _param in zip(
+                    lr, weight_decay, optimizer_grouped_parameters
+                )
             ]
+
+            for i, g in enumerate(optimizer_grouped_parameters):
+                print(f"group{i}: {len(g['params'])}")
 
             # 过滤空参数组（避免报错）
             optimizer_grouped_parameters = [

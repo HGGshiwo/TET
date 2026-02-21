@@ -1,5 +1,4 @@
 # https://connectaman.hashnode.dev/fine-tuning-the-qwen25-7b-vl-instruct-model-a-comprehensive-guide
-import numpy as np
 import torch
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
@@ -7,22 +6,19 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from peft import LoraConfig, get_peft_model
-from trl import SFTConfig, SFTTrainer
 
 from data_utils import (
     Prompt,
-    PromptV1_5,
     generate_dataset,
-    parse_multi_choice_response,
     prepare_inputs,
 )
-from train.trainer.sft_trainer import GroupRLSFTTrainer
+from train.trainer.sft_trainer import GroupRLSFTConfig, GroupRLSFTTrainer
 from utils import load_data
 from copy import deepcopy
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft4"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft8"
 EPOCH_NUM = 3
 PROMPT_TYPE = "v1_5"
 
@@ -168,11 +164,20 @@ if len(special_tokens) != 0:
 
 # Configure LoRA for model adaptation
 peft_config = LoraConfig(
-    lora_alpha=16,
+    lora_alpha=64,
     lora_dropout=0.05,
-    r=16,
+    r=32,
     bias="none",
-    target_modules=["q_proj", "v_proj", "lm_head"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "lm_head",
+    ],
     task_type="CAUSAL_LM",
     trainable_token_indices=trainable_token_indices,
 )
@@ -182,7 +187,7 @@ peft_model = get_peft_model(model, peft_config)
 peft_model.print_trainable_parameters()
 
 # Configure training arguments using SFTConfig
-training_args = SFTConfig(
+training_args = GroupRLSFTConfig(
     output_dir=OUTPUT_PATH,  # Directory to save the model
     num_train_epochs=EPOCH_NUM,  # Number of training epochs
     per_device_train_batch_size=1,  # Training batch size per device
@@ -190,13 +195,13 @@ training_args = SFTConfig(
     gradient_accumulation_steps=4,  # Number of steps to accumulate gradients
     gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
     optim="adamw_torch_fused",  # Optimizer type
-    learning_rate=1e-4,  # Learning rate for training
+    learning_rate=2e-4,  # Learning rate for training
     lr_scheduler_type="cosine",  # Learning rate scheduler type
     logging_steps=10,  # Interval (in steps) for logging
     eval_steps=100,  # Interval (in steps) for evaluation
     eval_strategy="steps",  # Evaluation strategy
     save_strategy="steps",  # Strategy for saving the model
-    save_steps=100,  # Interval (in steps) for saving
+    save_steps=1000,  # Interval (in steps) for saving
     metric_for_best_model="eval_loss",  # Metric to evaluate the best model
     greater_is_better=False,  # Lower metric values are better
     load_best_model_at_end=True,  # Load the best model after training
@@ -212,12 +217,11 @@ training_args = SFTConfig(
     dataset_text_field="",  # Text field in the dataset (if applicable)
     dataset_kwargs={"skip_prepare_dataset": True},  # Additional dataset options
     # max_seq_length=1024  # Uncomment to set maximum sequence length for input
+    lm_head_rl_rate=2,
 )
 
 # Do not remove unused columns from the dataset
 training_args.remove_unused_columns = False
-
-
 
 
 # Create the trainer for fine-tuning the model
