@@ -20,7 +20,7 @@ from utils import load_data, save_data
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft3\checkpoint-4100"
 # model_id = r"D:\work\实时对话\TET\train\outputs\egoschema-sub-sft4\checkpoint-700"
 # model_id = r"D:\work\实时对话\TET\train\outputs\sft6\checkpoint-4700"
-model_id = r'D:\work\实时对话\TET\train\outputs\sft'
+model_id = r"D:\work\实时对话\TET\train\outputs\sft8_2\checkpoint-3000"
 # model_id = r"D:\models\Video-R1-7B"
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"  # for answer2
@@ -32,13 +32,15 @@ R1_MODEL = False
 TEST_SFT = True
 
 batch_size = 8
-PROMPT_TYPE = "v1"  # 推理增强
-# PROMPT_TYPE = "v1_5"  # 推理增强
+# PROMPT_TYPE = "v1"  # 推理增强
+PROMPT_TYPE = "v1_5"  # 推理增强
 # PROMPT_TYPE = "v2"  # 直接输出答案
 # PROMPT_TYPE = "v3"  # 让模型关注关键帧
 # PROMPT_TYPE = "r1"
 
-OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval"  # for answer2
+OUTPUT_PATH = (
+    f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval"  # for answer2
+)
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer1
 # OUTPUT_PATH = f"{model_id}_p{PROMPT_TYPE}{'_sft' if TEST_SFT else ''}_eval2" # for answer2
 
@@ -65,13 +67,13 @@ processor.tokenizer.padding_side = "left"
 
 if R1_MODEL:
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        model_id, 
+        model_id,
         device_map="auto",
         torch_dtype=torch.bfloat16,
         quantization_config=bnb_config,
-        use_cache=True
+        use_cache=True,
     )
-    
+
 else:
     config = PeftConfig.from_pretrained(model_id)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -84,7 +86,7 @@ else:
         model.resize_token_embeddings(len(processor.tokenizer))
     if TEST_SFT:
         model = PeftModel.from_pretrained(model, model_id)
-        
+
 
 def calc_acc(sample):
     return parse_multi_choice_response(sample["answer"]) == sample["truth"]
@@ -113,7 +115,9 @@ for name, dataset in test_dataset.items():
         tqdm(test_dataset_batched, desc=f"test {name}")
     ):
         try:
-            inputs = prepare_inputs(processor, batch_data, add_generation_prompt=True).to("cuda")
+            inputs = prepare_inputs(
+                processor, batch_data, add_generation_prompt=True
+            ).to("cuda")
             # Generate responses for the entire batch
             generated_ids = model.generate(
                 **inputs,

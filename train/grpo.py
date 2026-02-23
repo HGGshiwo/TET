@@ -9,27 +9,35 @@ from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     Qwen2_5_VLProcessor,
 )
-from data_utils import format_output, generate_dataset, parse_multi_choice_response, prepare_inputs
+from data_utils import (
+    Prompt,
+    format_output,
+    generate_dataset,
+    parse_multi_choice_response,
+    prepare_inputs,
+)
 from utils import load_data
 from peft import LoraConfig, get_peft_model
-from grpo_trainer import GRPOConfig, Qwen2VLGRPOTrainer
+from trainer.grpo_trainer import GRPOConfig, Qwen2VLGRPOTrainer
 from typing import List, Optional, Dict, Any
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
-model_id = r"D:\work\实时对话\TET\train\outputs\sft7-4800-merge"
+model_id = r"D:\work\实时对话\TET\train\outputs\sft8_2-merge"
 
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft7-4800-merge-r1"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft8_2-merge-r1"
 PROMPT_TYPE = "v1_5"
 EPOCH_NUM = 3
 
+prompt = Prompt.create(PROMPT_TYPE)
 data_cfg = load_data(data_cfg_path)
 
 train_dataset, eval_dataset = generate_dataset(
     dataset_cfg=data_cfg,
-    prompt_type=PROMPT_TYPE,
+    prompt=prompt,
     # filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
     split_test=False,
 )
+
 
 def format(data: Dict[str, Any]):
     """适配trainer的数据结构"""
@@ -38,10 +46,11 @@ def format(data: Dict[str, Any]):
     data["data_type"] = "video"
     return data
 
+
 train_dataset = train_dataset.map(format, desc="[train]format data structure")
 eval_dataset = eval_dataset.map(format, desc="[eval]format data structure")
 
-eval_dataset = []
+
 # Model and processor configuration
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -64,9 +73,18 @@ processor.tokenizer.padding_side = "left"
 peft_config = LoraConfig(
     lora_alpha=16,
     lora_dropout=0.05,
-    r=16,
+    r=8,
     bias="none",
-    target_modules=["q_proj", "v_proj"],
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "lm_head",
+    ],
     task_type="CAUSAL_LM",
 )
 
@@ -87,8 +105,8 @@ training_args = GRPOConfig(
     eval_strategy="steps",  # Evaluation strategy
     save_strategy="steps",  # Strategy for saving the model
     save_steps=100,
-    metric_for_best_model="eval_loss",  # Metric to evaluate the best model
-    greater_is_better=False,  # Lower metric values are better
+    metric_for_best_model="reward_mean",  # Metric to evaluate the best model
+    greater_is_better=True,  # Lower metric values are better
     load_best_model_at_end=True,
     bf16=True,
     tf32=True,  # Use TensorFloat-32 precision
@@ -100,57 +118,39 @@ training_args = GRPOConfig(
         "use_reentrant": False
     },  # Gradient checkpointing options
     use_vllm=False,
-    num_generations=4,
-    generation_batch_size=4, # not use
-    temporal=True,
-    len_control=True,
+    num_generations=8,
+    generation_batch_size=4,  # not use
+    temporal=False,
+    len_control=False,
 )
 
 
-def format_reward(completions: list, **kwargs):
+def reward_func(completions: list, truth: list[str], **kwargs):
     """Reward function that checks if the completion has a specific format."""
     results = []
-    for completion in completions:
-        content = completion[0]['content']
+    for completion, sol in zip(completions, truth):
+        content = completion[0]["content"]
         reward = 0
         try:
-            res = format_output(content)
-            if (
-                isinstance(res.get("reasoning"), list)
-                and res.get("keyframes") is not None
-                and res.get("answer") is not None
-            ):
-                reward = 0.5
+            res = prompt.format_output(content)
+            if not all([key in res for key in ["reasoning", "keyframes", "answer"]]):
+                reward = -1
+            elif parse_multi_choice_response(res["answer"]) == sol:
+                reward = 1
         except Exception:
             pass
         results.append(reward)
     return results
 
 
-def accuracy_reward(completions: list[list[dict[str, str]]], truth: list[str], **kwargs) -> list[Optional[float]]:
-    """Reward function that checks if the completion matches the ground truth."""
-    rewards = []
-
-    for completion, sol in zip(completions, truth):
-        content = completion[0]['content']
-        reward = 0
-        try:
-            answer = format_output(content)["answer"]
-            if parse_multi_choice_response(answer) == sol:
-                reward = 1
-        except Exception:
-            pass
-        rewards.append(reward)
-    return rewards
-
 trainer = Qwen2VLGRPOTrainer(
-    reward_funcs=[format_reward, accuracy_reward],
+    reward_funcs=[reward_func],
     args=training_args,
     model=model,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     processing_class=processor,
-    peft_config=peft_config
+    peft_config=peft_config,
 )
 
 trainer.train()

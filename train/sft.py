@@ -18,7 +18,7 @@ from copy import deepcopy
 
 data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
 model_id = r"D:\models\Qwen2.5-VL-7B-Instruct"
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft8"
+OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft8_2"
 EPOCH_NUM = 3
 PROMPT_TYPE = "v1_5"
 
@@ -164,9 +164,9 @@ if len(special_tokens) != 0:
 
 # Configure LoRA for model adaptation
 peft_config = LoraConfig(
-    lora_alpha=64,
+    lora_alpha=16,
     lora_dropout=0.05,
-    r=32,
+    r=8,
     bias="none",
     target_modules=[
         "q_proj",
@@ -195,13 +195,13 @@ training_args = GroupRLSFTConfig(
     gradient_accumulation_steps=4,  # Number of steps to accumulate gradients
     gradient_checkpointing=True,  # Enable gradient checkpointing for memory efficiency
     optim="adamw_torch_fused",  # Optimizer type
-    learning_rate=2e-4,  # Learning rate for training
+    learning_rate=1e-4,  # Learning rate for training
     lr_scheduler_type="cosine",  # Learning rate scheduler type
     logging_steps=10,  # Interval (in steps) for logging
     eval_steps=100,  # Interval (in steps) for evaluation
     eval_strategy="steps",  # Evaluation strategy
     save_strategy="steps",  # Strategy for saving the model
-    save_steps=1000,  # Interval (in steps) for saving
+    save_steps=500,  # Interval (in steps) for saving
     metric_for_best_model="eval_loss",  # Metric to evaluate the best model
     greater_is_better=False,  # Lower metric values are better
     load_best_model_at_end=True,  # Load the best model after training
@@ -218,6 +218,7 @@ training_args = GroupRLSFTConfig(
     dataset_kwargs={"skip_prepare_dataset": True},  # Additional dataset options
     # max_seq_length=1024  # Uncomment to set maximum sequence length for input
     lm_head_rl_rate=2,
+    weight_decay=0.1
 )
 
 # Do not remove unused columns from the dataset
