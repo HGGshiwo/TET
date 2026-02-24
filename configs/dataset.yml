@@ -6,7 +6,7 @@ videomme:
   
 egoschema:
   frame_fps: 1
-  num_examples_to_run: 300
+  num_examples_to_run: -1
   video_path: D:/datasets/egoschema/videos
   anno_path: D:/datasets/egoschema/questions.json
   subset_path: D:/datasets/egoschema/subset_answers.json
@@ -24,8 +24,32 @@ nextoe:
 
 nextmc:
   frame_fps: 1
-  num_examples_to_run: 1000
+  num_examples_to_run: -1
   stopwords_path: D:/datasets/nextqa/stopwords.csv
   map_path: D:/datasets/nextqa/map_vid_vidorID.json
   video_path: D:/datasets/nextqa/NExTVideo
   anno_path: D:/datasets/nextqa/MC
+
+intentqa:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: D:/datasets/IntentQA/fixed_videos-001
+  anno_path: D:/datasets/IntentQA/QA_annotations
+
+mlvu:
+  frame_fps: 1
+  num_examples_to_run: 1000
+  video_path: D:/datasets/MVLU/test/MLVU_Test/video 
+  anno_path: D:/datasets/MVLU/test/test_ground_truth/test_mcq_gt.json
+
+longvideo:
+  frame_fps: 1
+  num_examples_to_run: 1000
+  video_path: D:/datasets/LongVideoBench/videos 
+  anno_path: D:/datasets/LongVideoBench
+
+mvbench:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: D:/datasets/MVBench/video 
+  anno_path: D:/datasets/MVBench/json

@@ -83,7 +83,6 @@ peft_config = LoraConfig(
         "gate_proj",
         "up_proj",
         "down_proj",
-        "lm_head",
     ],
     task_type="CAUSAL_LM",
 )
@@ -118,7 +117,7 @@ training_args = GRPOConfig(
         "use_reentrant": False
     },  # Gradient checkpointing options
     use_vllm=False,
-    num_generations=8,
+    num_generations=2,
     generation_batch_size=4,  # not use
     temporal=False,
     len_control=False,
@@ -134,11 +133,13 @@ def reward_func(completions: list, truth: list[str], **kwargs):
         try:
             res = prompt.format_output(content)
             if not all([key in res for key in ["reasoning", "keyframes", "answer"]]):
-                reward = -1
+                reward = -0.5
             elif parse_multi_choice_response(res["answer"]) == sol:
                 reward = 1
+            else:
+                reward = 0
         except Exception:
-            pass
+            reward = -0.5
         results.append(reward)
     return results
 
