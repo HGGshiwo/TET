@@ -75,6 +75,7 @@ RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 class GRPOConfig(_GRPOConfig):
     temporal: bool = field(default=True)
     len_control: bool = field(default=True)
+    temperature: float = field(default=1)
 
 
 def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
@@ -96,7 +97,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         model: Union[str, PreTrainedModel],
         reward_funcs: Union[RewardFunc, list[RewardFunc]],
         args: GRPOConfig = None,
-        script_args=None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
             Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]
@@ -111,6 +111,8 @@ class Qwen2VLGRPOTrainer(Trainer):
         ] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
         attn_implementation: str = "flash_attention_2",
+        compute_metrics: Callable = None,
+        accuracy_compare_func: Callable = None,
     ):
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -167,6 +169,11 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # 参考模型初始化：仅在必要时创建，减少显存占用
         self.ref_model = None
+
+        if args.gradient_checkpointing:
+            model.gradient_checkpointing_enable()  # 开启 checkpoint
+            model.enable_input_require_grads()  # 【关键】强制让输入层输出需要梯度
+
         if is_deepspeed_zero3_enabled():
             if "Qwen2-VL" in model_id:
                 self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -243,30 +250,24 @@ class Qwen2VLGRPOTrainer(Trainer):
             max_new_tokens=self.max_completion_length,
             do_sample=True,
             top_p=0.95,
-            temperature=1,
+            temperature=args.temperature,
             num_return_sequences=self.num_generations,
             pad_token_id=pad_token_id,
+            use_cache=True,
         )
         self.shuffled_num_generations = self.num_generations // 2
         self.shuffled_generation_config = GenerationConfig(
             max_new_tokens=self.max_completion_length,
             do_sample=True,
             top_p=0.95,
-            temperature=1,
+            temperature=args.temperature,
             num_return_sequences=self.shuffled_num_generations,
             pad_token_id=pad_token_id,
-        )
-
-        self.dummy_generation_config = GenerationConfig(
-            max_new_tokens=1,
-            do_sample=True,
-            top_p=0.95,
-            temperature=1,
-            num_return_sequences=1,
-            pad_token_id=pad_token_id,
+            use_cache=True,
         )
         self.len_control = args.len_control
         self.beta = args.beta
+        self.accuracy_compare_func = accuracy_compare_func
 
         model.warnings_issued["estimate_tokens"] = True
         self._metrics = defaultdict(list)
@@ -280,6 +281,7 @@ class Qwen2VLGRPOTrainer(Trainer):
             processing_class=processing_class,
             callbacks=callbacks,
             optimizers=optimizers,
+            compute_metrics=compute_metrics,
         )
 
         self.model_accepts_loss_kwargs = False
@@ -327,31 +329,29 @@ class Qwen2VLGRPOTrainer(Trainer):
                             del sub_entry[k]
         return data
 
-    def _prepare_inputs(
-        self, inputs: dict[str, Union[torch.Tensor, Any]]
-    ) -> dict[str, Union[torch.Tensor, Any]]:
+    def _prepare_inputs(self, inputs):
         return inputs
 
-    def compute_loss(
-        self, model, inputs, return_outputs=False, num_items_in_batch=None
-    ):
-        if return_outputs:
-            raise ValueError("The GRPOTrainer does not support returning outputs")
-
-        # 避免深拷贝，浅拷贝即可满足需求，减少显存占用
-        prompts = [x["prompt"] for x in inputs]
+    def _prepare_prompt_inputs(self, inputs, do_shuffle=False):
         prompts_text = [
             maybe_apply_chat_template(example, self.processing_class)["prompt"]
             for example in inputs
         ]
-        input_copy = inputs[0]["prompt"]  # 替换deepcopy为浅拷贝
+        input_copy = [inputs[i]["prompt"] for i in range(len(inputs))]
         input_copy = self.remove_none_from_data(input_copy)
 
         image_inputs, video_inputs, video_kwargs = process_vision_info(
             input_copy, return_video_kwargs=True
         )
+        if do_shuffle:
+            if not video_inputs:
+                return None
+            indices = [
+                torch.randperm(video_inputs[i].size(0))
+                for i in range(len(video_inputs))
+            ]
+            video_inputs = [video_inputs[i][indice] for i, indice in enumerate(indices)]
 
-        # 处理prompt输入：避免深拷贝prompts_text，减少显存
         prompt_inputs = self.processing_class(
             text=prompts_text,
             images=image_inputs,
@@ -362,53 +362,94 @@ class Qwen2VLGRPOTrainer(Trainer):
             add_special_tokens=False,
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        return prompt_inputs
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        if self.accuracy_compare_func is None:
+            raise RuntimeError("accuracy_compare_func is None!")
+        prompt_inputs = self._prepare_prompt_inputs(inputs)
+        prompt_ids = prompt_inputs["input_ids"]
+        eval_gen_config = GenerationConfig(
+            do_sample=False,
+            num_beams=1,
+            max_new_tokens=1024,
+            pad_token_id=self.processing_class.tokenizer.pad_token_id,
+            use_cache=True,
+        )
+
+        with torch.no_grad():
+            with unwrap_model_for_generation(
+                model, self.accelerator
+            ) as unwrapped_model:
+                generated_ids = unwrapped_model.generate(
+                    **prompt_inputs,
+                    generation_config=eval_gen_config,
+                    use_model_defaults=False,  # 不使用模型默认值, 否则可能会覆盖generation_config
+                )
+            completion_ids = [
+                out_ids[len(in_ids) :]
+                for in_ids, out_ids in zip(prompt_ids, generated_ids)
+            ]
+            completions = self.processing_class.batch_decode(
+                completion_ids, skip_special_tokens=True
+            )
+
+        predictions = []
+        for completion, example in zip(completions, inputs):
+            truth = example.get("truth")
+            if truth is not None:
+                is_correct = self.accuracy_compare_func(completion, truth)
+                predictions.append(1.0 if is_correct else 0.0)
+            else:
+                predictions.append(0.0)
+
+        labels = torch.tensor(
+            predictions, dtype=torch.float32, device=self.accelerator.device
+        )
+        loss = torch.zeros_like(labels)
+        logits = torch.zeros_like(labels)
+        return (loss, logits, labels)
+
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        if return_outputs:
+            raise ValueError("The GRPOTrainer does not support returning outputs")
+        prompts = [item["prompt"] for item in inputs]
+        prompt_inputs = self._prepare_prompt_inputs(inputs)
         prompt_ids = prompt_inputs["input_ids"]
 
         # 时序相关处理：仅在有视频输入时处理，避免冗余计算
         shuffled_prompt_ids, shuffled_completion_ids = None, None
-        if self.temporal and video_inputs:
-            indices = torch.randperm(video_inputs[0].size(0))
-            shuffled_video_inputs = [video_inputs[0][indices]]
-            # 复用prompts_text，减少拷贝
-            shuffled_prompt_inputs = self.processing_class(
-                text=prompts_text,
-                images=image_inputs,
-                videos=shuffled_video_inputs,
-                return_tensors="pt",
-                padding=True,
-                padding_side="left",
-                add_special_tokens=False,
+        if self.temporal:
+            shuffled_prompt_inputs = self._prepare_prompt_inputs(
+                inputs, do_shuffle=True
             )
-            shuffled_prompt_inputs = super()._prepare_inputs(shuffled_prompt_inputs)
-            shuffled_prompt_ids = shuffled_prompt_inputs["input_ids"]
-
-            # 释放临时张量
-            del shuffled_video_inputs
+            if shuffled_prompt_inputs is not None:
+                shuffled_prompt_ids = shuffled_prompt_inputs["input_ids"]
 
         # 生成补全序列：使用unwrap_model_for_generation减少显存占用
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
             prompt_completion_ids = unwrapped_model.generate(
-                **prompt_inputs, generation_config=self.generation_config
+                **prompt_inputs,
+                generation_config=self.generation_config,
+                use_model_defaults=False,  # 不使用模型默认值, 否则可能会覆盖generation_config
             )
+
             prompt_length = prompt_ids.size(1)
             prompt_ids = prompt_completion_ids[:, :prompt_length]
             completion_ids = prompt_completion_ids[:, prompt_length:]
 
-            if self.temporal:
-                if video_inputs:
-                    shuffled_prompt_completion_ids = unwrapped_model.generate(
-                        **shuffled_prompt_inputs,
-                        generation_config=self.shuffled_generation_config,
-                    )
-                    shuffled_prompt_length = shuffled_prompt_ids.size(1)
-                    shuffled_completion_ids = shuffled_prompt_completion_ids[
-                        :, shuffled_prompt_length:
-                    ]
-
-                else:
-                    shuffled_prompt_completion_ids = unwrapped_model.generate(
-                        **prompt_inputs, generation_config=self.dummy_generation_config
-                    )
+            if shuffled_prompt_ids is not None:
+                shuffled_prompt_completion_ids = unwrapped_model.generate(
+                    **shuffled_prompt_inputs,
+                    generation_config=self.shuffled_generation_config,
+                    use_model_defaults=False,
+                )
+                shuffled_prompt_length = shuffled_prompt_ids.size(1)
+                shuffled_completion_ids = shuffled_prompt_completion_ids[
+                    :, shuffled_prompt_length:
+                ]
 
         # 生成补全掩码：控制张量大小，避免冗余
         is_eos = completion_ids == self.processing_class.eos_token_id
@@ -474,7 +515,7 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # 时序奖励计算：仅在有视频输入时处理，避免冗余
         shuffled_rewards_per_func = None
-        if self.temporal and video_inputs:
+        if shuffled_completion_ids is not None:
             shuffled_completions = self.processing_class.batch_decode(
                 shuffled_completion_ids, skip_special_tokens=True
             )
@@ -556,7 +597,7 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # 时序奖励处理：复用已有张量，减少拷贝
         temporal_rewards = torch.tensor([0.5], device=device, dtype=torch.float32)
-        if self.temporal and video_inputs:
+        if shuffled_completion_ids is not None:
             temporal_rewards_per_func = rewards_per_func.clone()
             acc_mean = temporal_rewards_per_func[:, 0].mean()
             shuffled_acc_mean = shuffled_rewards_per_func[:, 0].mean()
@@ -574,7 +615,7 @@ class Qwen2VLGRPOTrainer(Trainer):
             del acc_mean, shuffled_acc_mean, mask
 
         # 奖励求和：控制数据类型，减少显存
-        if self.temporal and video_inputs:
+        if shuffled_completion_ids is not None:
             rewards = temporal_rewards_per_func.sum(dim=1)
         else:
             rewards = rewards_per_func.sum(dim=1)
@@ -618,14 +659,11 @@ class Qwen2VLGRPOTrainer(Trainer):
         del per_token_loss, advantages, per_token_kl
 
         # 日志指标计算：使用accelerator.gather_for_metrics，减少显存
-        completion_length = (
-            self.accelerator.gather_for_metrics(
-                completion_ids.size(1) * torch.ones_like(completion_mask.sum(1))
-            )
-            .float()
-            .mean()
-            .item()
+        completion_length = self.accelerator.gather_for_metrics(
+            completion_ids.size(1) * torch.ones_like(completion_mask.sum(1))
         )
+        completion_length = completion_length.float().mean().item()
+
         self._metrics["completion_length"].append(completion_length)
 
         reward_per_func = self.accelerator.gather_for_metrics(rewards_per_func).mean(0)
@@ -647,18 +685,18 @@ class Qwen2VLGRPOTrainer(Trainer):
         correct_devices = (rewards_per_device == 1).all(dim=1)
         correct_ratio = correct_devices.sum().item() / num_devices
 
+        # 一个step中全对/全错的样本, 1 - all_wrong - all_correct是有效样本比例
         self._metrics["all_wrong"].append(wrong_ratio)
         self._metrics["all_correct"].append(correct_ratio)
 
-        if self.temporal:
-            if video_inputs:
-                temporal_rewards_list = self.accelerator.gather_for_metrics(
-                    temporal_rewards
-                )
-                self._metrics["temporal_rewards"].append(
-                    temporal_rewards_list.mean().item()
-                )
-                del temporal_rewards_list
+        if shuffled_completion_ids is not None:
+            temporal_rewards_list = self.accelerator.gather_for_metrics(
+                temporal_rewards
+            )
+            self._metrics["temporal_rewards"].append(
+                temporal_rewards_list.mean().item()
+            )
+            del temporal_rewards_list
         self._metrics["reward"].append(gathered_rewards.mean().item())
         self._metrics["reward_std"].append(gathered_rewards.std().item())
 
@@ -681,56 +719,3 @@ class Qwen2VLGRPOTrainer(Trainer):
         else:
             super().log(logs)
         self._metrics.clear()
-
-    def create_model_card(
-        self,
-        model_name: Optional[str] = None,
-        dataset_name: Optional[str] = None,
-        tags: Union[str, list[str], None] = None,
-    ):
-        if not self.is_world_process_zero():
-            return
-
-        base_model = (
-            self.model.config._name_or_path
-            if hasattr(self.model.config, "_name_or_path")
-            and not os.path.isdir(self.model.config._name_or_path)
-            else None
-        )
-
-        tags = tags or []
-        if isinstance(tags, str):
-            tags = [tags]
-
-        if hasattr(self.model.config, "unsloth_version"):
-            tags.append("unsloth")
-
-        citation = textwrap.dedent(
-            """\
-            @article{zhihong2024deepseekmath,
-                title        = {{DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models}},
-                author       = {Zhihong Shao and Peiyi Wang and Qihao Zhu and Runxin Xu and Junxiao Song and Mingchuan Zhang and Y. K. Li and Y. Wu and Daya Guo},
-                year         = 2024,
-                eprint       = {arXiv:2402.03300},
-            """
-        )
-
-        model_card = generate_model_card(
-            base_model=base_model,
-            model_name=model_name,
-            hub_model_id=self.hub_model_id,
-            dataset_name=dataset_name,
-            tags=tags,
-            wandb_url=(
-                wandb.run.get_url()
-                if is_wandb_available() and wandb.run is not None
-                else None
-            ),
-            comet_url=get_comet_experiment_url(),
-            trainer_name="GRPO",
-            trainer_citation=citation,
-            paper_title="DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models",
-            paper_id="2402.03300",
-        )
-
-        model_card.save(os.path.join(self.args.output_dir, "README.md"))

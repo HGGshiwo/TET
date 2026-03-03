@@ -58,12 +58,63 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_quant_type="nf4",
     bnb_4bit_compute_dtype=torch.bfloat16,
 )
+
+
+def accuracy_compare_func(output: str, truth: str) -> bool:
+    """Compare model output with truth for evaluation accuracy."""
+    try:
+        res = prompt.format_output(output)
+        if "answer" not in res:
+            return False
+        parsed_answer = parse_multi_choice_response(res["answer"])
+        return parsed_answer == truth
+    except Exception:
+        return False
+    
+# Configure training arguments using GRPOConfig
+training_args = GRPOConfig(
+    output_dir=OUTPUT_PATH,
+    num_train_epochs=EPOCH_NUM,
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=4,
+    gradient_accumulation_steps=1,
+    gradient_checkpointing=True,
+    optim="adamw_torch_fused",
+    learning_rate=1e-5,
+    lr_scheduler_type="constant",
+    remove_unused_columns=False,  # to access the solution column in accuracy_reward
+    logging_steps=10,
+    eval_steps=200,
+    eval_strategy="steps",  # Evaluation strategy
+    save_strategy="steps",  # Strategy for saving the model
+    save_steps=200,
+    metric_for_best_model="accuracy",  # Metric to evaluate the best model
+    greater_is_better=True,  # Higher accuracy is better
+    load_best_model_at_end=True,
+    bf16=True,
+    tf32=True,  # Use TensorFloat-32 precision
+    max_grad_norm=0.3,  # Maximum gradient norm for clipping
+    warmup_ratio=0.03,  # Warmup ratio for learning rate
+    report_to="tensorboard",
+    push_to_hub=False,  # Do not push the model to Hugging Face Hub
+    gradient_checkpointing_kwargs={
+        "use_reentrant": False
+    },  # Gradient checkpointing options
+    use_vllm=False,
+    num_generations=2,
+    generation_batch_size=4,  # not use
+    temporal=False,
+    len_control=False,
+    temperature=1.4,
+    beta=0.04,
+)
+
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     model_id,
     device_map="auto",
     torch_dtype=torch.bfloat16,
     quantization_config=bnb_config,
-    use_cache=True,
+    use_cache=True if not training_args.gradient_checkpointing else False,
 )
 processor = Qwen2_5_VLProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
@@ -87,42 +138,6 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-# Configure training arguments using GRPOConfig
-training_args = GRPOConfig(
-    output_dir=OUTPUT_PATH,
-    num_train_epochs=EPOCH_NUM,
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=4,
-    gradient_accumulation_steps=1,
-    gradient_checkpointing=False,
-    optim="adamw_torch_fused",
-    learning_rate=1e-5,
-    lr_scheduler_type="constant",
-    remove_unused_columns=False,  # to access the solution column in accuracy_reward
-    logging_steps=10,
-    eval_steps=100,
-    eval_strategy="steps",  # Evaluation strategy
-    save_strategy="steps",  # Strategy for saving the model
-    save_steps=100,
-    metric_for_best_model="reward_mean",  # Metric to evaluate the best model
-    greater_is_better=True,  # Lower metric values are better
-    load_best_model_at_end=True,
-    bf16=True,
-    tf32=True,  # Use TensorFloat-32 precision
-    max_grad_norm=0.3,  # Maximum gradient norm for clipping
-    warmup_ratio=0.03,  # Warmup ratio for learning rate
-    report_to="tensorboard",
-    push_to_hub=False,  # Do not push the model to Hugging Face Hub
-    gradient_checkpointing_kwargs={
-        "use_reentrant": False
-    },  # Gradient checkpointing options
-    use_vllm=False,
-    num_generations=2,
-    generation_batch_size=4,  # not use
-    temporal=False,
-    len_control=False,
-)
-
 
 def reward_func(completions: list, truth: list[str], **kwargs):
     """Reward function that checks if the completion has a specific format."""
@@ -144,6 +159,11 @@ def reward_func(completions: list, truth: list[str], **kwargs):
     return results
 
 
+def compute_metrics(eval_pred):
+    # eval_pred.predictions 通常是 logits
+    logits, labels = eval_pred
+    return {"accuracy": labels.mean()}
+
 trainer = Qwen2VLGRPOTrainer(
     reward_funcs=[reward_func],
     args=training_args,
@@ -152,6 +172,8 @@ trainer = Qwen2VLGRPOTrainer(
     eval_dataset=eval_dataset,
     processing_class=processor,
     peft_config=peft_config,
+    compute_metrics=compute_metrics,
+    accuracy_compare_func=accuracy_compare_func,
 )
 
 trainer.train()
