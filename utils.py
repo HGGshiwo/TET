@@ -5,7 +5,6 @@ import base64, io
 import re
 import numpy as np
 import torch
-import clip
 import math
 import jsonlines
 import decord
@@ -281,15 +280,16 @@ class OpenClipModel:
                 sim = sim.reshape(B, N, -1).max(dim=1).values
             return sim  # (B, M)
 
-
 class ClipModel:
     def __init__(self, pretrained_path):
+        import clip
         pretrained_path = r"D:\models\ViT-B-32.pt"
         if pretrained_path is None:
             pretrained_path = ClipModel.pretrained_path
         self.model, self.preprocess = clip.load(pretrained_path, device="cuda")
 
     def forward(self, keywards, images):
+        import clip
         keywards = clip.tokenize(keywards).cuda()
         images = [self.preprocess(img) for img in images]
         images = torch.stack(images, dim=0).cuda()

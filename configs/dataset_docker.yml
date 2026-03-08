@@ -1,0 +1,55 @@
+videomme:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: /datasets/Video-MME/data
+  anno_path: /datasets/Video-MME/videomme/test-00000-of-00001.parquet
+  
+egoschema:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: /datasets/egoschema/videos
+  anno_path: /datasets/egoschema/questions.json
+  subset_path: /datasets/egoschema/subset_answers.json
+  # video_path: /data/raid5/zhangbingwen/egoschema/videos
+  # anno_path: /data/raid5/zhangbingwen/egoschema/questions.json
+  # subset_path: /data/raid5/zhangbingwen/egoschema/subset_answers.json
+
+nextoe:
+  frame_fps: 1
+  num_examples_to_run: 100
+  map_path: /datasets/nextqa/map_vid_vidorID.json
+  video_path: /datasets/nextqa/NExTVideo
+  anno_path: /datasets/nextqa/OE
+  stopwords_path: /datasets/nextqa/stopwords.csv
+
+nextmc:
+  frame_fps: 1
+  num_examples_to_run: -1
+  stopwords_path: /datasets/nextqa/stopwords.csv
+  map_path: /datasets/nextqa/map_vid_vidorID.json
+  video_path: /datasets/nextqa/NExTVideo
+  anno_path: /datasets/nextqa/MC
+
+intentqa:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: /datasets/IntentQA/fixed_videos-001
+  anno_path: /datasets/IntentQA/QA_annotations
+
+mlvu:
+  frame_fps: 1
+  num_examples_to_run: 1000
+  video_path: /datasets/MVLU/test/MLVU_Test/video 
+  anno_path: /datasets/MVLU/test/test_ground_truth/test_mcq_gt.json
+
+longvideo:
+  frame_fps: 1
+  num_examples_to_run: 1000
+  video_path: /datasets/LongVideoBench/videos 
+  anno_path: /datasets/LongVideoBench
+
+mvbench:
+  frame_fps: 1
+  num_examples_to_run: -1
+  video_path: /datasets/MVBench/video 
+  anno_path: /datasets/MVBench/json

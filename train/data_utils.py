@@ -1,8 +1,8 @@
 from shlex import join
 from typing import Callable, Optional, Union, Tuple, List, Any, Dict
 import time
-
-
+import os
+os.environ["FORCE_QWENVL_VIDEO_READER"] = "decord"
 import torch
 from qwen_vl_utils.vision_process import (
     VIDEO_READER_BACKENDS,

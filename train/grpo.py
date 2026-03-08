@@ -1,5 +1,10 @@
 # https://huggingface.co/learn/cookbook/en/fine_tuning_vlm_grpo_trl
+# try:
+#     import unsloth
+# except:
+#     pass
 import json
+from pathlib import Path
 import torch
 from transformers import (
     AutoProcessor,
@@ -21,12 +26,29 @@ from peft import LoraConfig, get_peft_model
 from trainer.grpo_trainer import GRPOConfig, Qwen2VLGRPOTrainer
 from typing import List, Optional, Dict, Any
 
-data_cfg_path = r"D:\work\实时对话\TET\train\config\dataset_cfg.yml"
-model_id = r"D:\work\实时对话\TET\train\outputs\sft8_2-merge"
+USE_DOCKER = True
+base_model_id = "sft8_2-merge"
+output_model_id = "sft8_2-merge_r1_2"
+if not USE_DOCKER:
+    data_cfg_path = "dataset_cfg.yml"
+    dataset_cfg_path = "dataset.yml"
+    use_unsloth = False
+    use_vllm = False
+else:
+    data_cfg_path = "dataset_cfg_docker.yml"
+    dataset_cfg_path = "dataset_docker.yml"
+    use_unsloth = False
+    use_vllm = False
 
-OUTPUT_PATH = r"D:\work\实时对话\TET\train\outputs\sft8_2-merge-r1"
+base_dir = Path(__file__).parent.parent
+data_cfg_path = base_dir.joinpath("train", "config", data_cfg_path)
+dataset_cfg_path = base_dir.joinpath("configs", dataset_cfg_path)
+model_id = base_dir.joinpath("train", "outputs", base_model_id)
+
+
+OUTPUT_PATH = base_dir.joinpath("train", "outputs", f"{output_model_id}")
 PROMPT_TYPE = "v1_5"
-EPOCH_NUM = 3
+EPOCH_NUM = 1
 
 prompt = Prompt.create(PROMPT_TYPE)
 data_cfg = load_data(data_cfg_path)
@@ -36,6 +58,7 @@ train_dataset, eval_dataset = generate_dataset(
     prompt=prompt,
     # filter=lambda data: parse_multi_choice_response(data["answer"]) == data["truth"],
     split_test=False,
+    dataset_config=dataset_cfg_path,
 )
 
 
@@ -70,13 +93,16 @@ def accuracy_compare_func(output: str, truth: str) -> bool:
         return parsed_answer == truth
     except Exception:
         return False
-    
+
+
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
+    use_vllm=use_vllm,  # uses vLLM
+    use_unsloth=use_unsloth,
     output_dir=OUTPUT_PATH,
     num_train_epochs=EPOCH_NUM,
     per_device_train_batch_size=1,
-    per_device_eval_batch_size=4,
+    per_device_eval_batch_size=8,
     gradient_accumulation_steps=1,
     gradient_checkpointing=True,
     optim="adamw_torch_fused",
@@ -100,22 +126,29 @@ training_args = GRPOConfig(
     gradient_checkpointing_kwargs={
         "use_reentrant": False
     },  # Gradient checkpointing options
-    use_vllm=False,
-    num_generations=2,
-    generation_batch_size=4,  # not use
+    num_generations=4,
+    generation_batch_size=8,  # not use
     temporal=False,
     len_control=False,
     temperature=1.4,
     beta=0.04,
 )
 
-model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    model_id,
+# unsloth自己管理量化, 这里不传bnb
+model_init_kwargs = dict(
     device_map="auto",
     torch_dtype=torch.bfloat16,
-    quantization_config=bnb_config,
     use_cache=True if not training_args.gradient_checkpointing else False,
 )
+
+if not training_args.use_unsloth:
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_id, quantization_config=bnb_config, **model_init_kwargs
+    )
+    model_init_kwargs = None
+else:
+    model = str(model_id.absolute())
+
 processor = Qwen2_5_VLProcessor.from_pretrained(model_id)
 # Set padding side to left for decoder-only architecture
 processor.tokenizer.padding_side = "left"
@@ -163,6 +196,7 @@ def compute_metrics(eval_pred):
     # eval_pred.predictions 通常是 logits
     logits, labels = eval_pred
     return {"accuracy": labels.mean()}
+
 
 trainer = Qwen2VLGRPOTrainer(
     reward_funcs=[reward_func],

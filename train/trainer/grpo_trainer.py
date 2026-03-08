@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from pathlib import Path
 import textwrap
 from collections import defaultdict
 from typing import Any, Callable, Optional, Union
@@ -68,14 +69,35 @@ if is_wandb_available():
     import wandb
 
 
+# 检查 unsloth 是否可用
+def _is_unsloth_available() -> bool:
+    try:
+        import unsloth  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
 
 @dataclass
 class GRPOConfig(_GRPOConfig):
-    temporal: bool = field(default=True)
-    len_control: bool = field(default=True)
+    temporal: bool = field(default=False)
+    len_control: bool = field(default=False)
     temperature: float = field(default=1)
+    use_vllm: bool = field(default=False, metadata={"help": "是否使用 vllm 加速训练。"})
+    use_unsloth: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "是否使用 unsloth 加速训练。启用后将使用 unsloth 的 FastVisionModel 加载模型，"
+                "可显著降低显存占用并提升训练速度（需要安装 unsloth 包）。"
+                "若 unsloth 未安装，该参数会被忽略并回退到标准加载方式。"
+            )
+        },
+    )
 
 
 def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
@@ -125,6 +147,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         # 模型初始化参数优化：启用flash attention减少显存，控制cache使用
         model_init_kwargs = args.model_init_kwargs or {}
         model_init_kwargs["attn_implementation"] = attn_implementation
+        self._use_unsloth = False  # 实际是否使用了 unsloth
         if isinstance(model, str):
             model_id = model
             torch_dtype = model_init_kwargs.get("torch_dtype")
@@ -137,25 +160,93 @@ class Qwen2VLGRPOTrainer(Trainer):
                 else model_init_kwargs.get("use_cache")
             )
 
-            # 按模型类型加载，避免冗余判断
-            if "Qwen2-VL" in model_id:
-                model = Qwen2VLForConditionalGeneration.from_pretrained(
-                    model, **model_init_kwargs
+            # unsloth 加速加载路径
+            if args.use_unsloth and _is_unsloth_available():
+                from unsloth import FastVisionModel
+
+                # unsloth FastVisionModel 不接受这些参数，quantization_config/device_map 由 unsloth 自己管理
+                _unsloth_exclude = {
+                    "attn_implementation",
+                    "use_cache",
+                    "device_map",
+                    "quantization_config",
+                }
+                unsloth_kwargs = {
+                    k: v
+                    for k, v in model_init_kwargs.items()
+                    if k not in _unsloth_exclude
+                }
+                load_in_4bit = unsloth_kwargs.pop("load_in_4bit", True)
+                padding_side = processing_class.tokenizer.padding_side
+                self._use_vllm = args.use_vllm
+                model, processing_class = FastVisionModel.from_pretrained(
+                    model_name=model_id,
+                    load_in_4bit=load_in_4bit,
+                    max_seq_length=2048,
+                    fast_inference=args.use_vllm,
+                    use_gradient_checkpointing=(
+                        "unsloth" if args.gradient_checkpointing else False
+                    ),
+                    gpu_memory_utilization=0.5,  # vllm KV cache 预占比例，48GB GPU 下约 24GB
+                    **unsloth_kwargs,
                 )
-            elif "Qwen2.5-VL" in model_id:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model, **model_init_kwargs
+                self._use_unsloth = True
+                import warnings
+
+                warnings.warn(
+                    "Unsloth FastVisionModel 已加载，processing_class 由 unsloth 提供，"
+                    "外部传入的 processing_class 参数将被忽略。",
+                    UserWarning,
                 )
-            elif "Aria" in model_id:
-                model_init_kwargs.pop("use_cache")
-                model = AriaForConditionalGeneration.from_pretrained(
-                    model, **model_init_kwargs
+                processing_class.tokenizer.padding_side = padding_side
+            elif args.use_unsloth and not _is_unsloth_available():
+                import warnings
+
+                warnings.warn(
+                    "use_unsloth=True 但未检测到 unsloth 包，回退到标准加载方式。"
+                    "请通过 `pip install unsloth` 安装。",
+                    UserWarning,
                 )
+                # 回退到标准加载
+                if "Qwen2-VL" in model_id:
+                    model = Qwen2VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                elif "Qwen2.5-VL" in model_id:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                elif "Aria" in model_id:
+                    model_init_kwargs.pop("use_cache")
+                    model = AriaForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                else:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
             else:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model, **model_init_kwargs
-                )
+                # 按模型类型加载，避免冗余判断
+                if "Qwen2-VL" in model_id:
+                    model = Qwen2VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                elif "Qwen2.5-VL" in model_id:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                elif "Aria" in model_id:
+                    model_init_kwargs.pop("use_cache")
+                    model = AriaForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
+                else:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model, **model_init_kwargs
+                    )
         else:
+            if args.use_unsloth:
+                raise ValueError("use_unsloth = True时只支持传递模型路径!")
             model_id = model.config._name_or_path
             if args.model_init_kwargs is not None:
                 raise ValueError(
@@ -191,7 +282,8 @@ class Qwen2VLGRPOTrainer(Trainer):
                 self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     model_id, **model_init_kwargs
                 )
-        elif isinstance(model, PeftModel) or (peft_config is not None):
+        elif not isinstance(model, PeftModel) and (peft_config is None):
+            # 非 LoRA 全量模型：无法通过 disable_adapter() 获取初始权重，需独立创建 ref_model
             self.ref_model = create_reference_model(model)
 
         # 处理类初始化：复用pad/eos token id，避免重复计算
@@ -429,27 +521,70 @@ class Qwen2VLGRPOTrainer(Trainer):
                 shuffled_prompt_ids = shuffled_prompt_inputs["input_ids"]
 
         # 生成补全序列：使用unwrap_model_for_generation减少显存占用
-        with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
-            prompt_completion_ids = unwrapped_model.generate(
-                **prompt_inputs,
-                generation_config=self.generation_config,
-                use_model_defaults=False,  # 不使用模型默认值, 否则可能会覆盖generation_config
-            )
+        # 若启用 unsloth，直接使用模型的 fast_generate 接口以获得更高吞吐
+        if self._use_unsloth:
+            from unsloth import FastVisionModel
+            # 切换到推理模式：恢复 use_cache=True，关闭 gradient checkpointing
+            FastVisionModel.for_inference(model)
+            if self._use_vllm:
+                # vllm 不接受 input_ids 张量，需要传 token id 列表
+                input_ids_list = prompt_inputs["input_ids"].tolist()
+                prompt_completion_ids = model.fast_generate(
+                    input_ids_list, generation_config=self.generation_config
+                )
+            else:
+                prompt_completion_ids = model.fast_generate(
+                    **prompt_inputs, generation_config=self.generation_config
+                )
 
             prompt_length = prompt_ids.size(1)
             prompt_ids = prompt_completion_ids[:, :prompt_length]
             completion_ids = prompt_completion_ids[:, prompt_length:]
 
             if shuffled_prompt_ids is not None:
-                shuffled_prompt_completion_ids = unwrapped_model.generate(
-                    **shuffled_prompt_inputs,
-                    generation_config=self.shuffled_generation_config,
-                    use_model_defaults=False,
-                )
+                if self._use_vllm:
+                    shuffled_input_ids_list = shuffled_prompt_inputs[
+                        "input_ids"
+                    ].tolist()
+                    shuffled_prompt_completion_ids = model.fast_generate(
+                        shuffled_input_ids_list,
+                        generation_config=self.shuffled_generation_config,
+                    )
+                else:
+                    shuffled_prompt_completion_ids = model.fast_generate(
+                        **shuffled_prompt_inputs,
+                        generation_config=self.shuffled_generation_config,
+                    )
                 shuffled_prompt_length = shuffled_prompt_ids.size(1)
                 shuffled_completion_ids = shuffled_prompt_completion_ids[
                     :, shuffled_prompt_length:
                 ]
+            # 切换回训练模式：关闭 use_cache，恢复 gradient checkpointing
+            FastVisionModel.for_training(model)
+        else:
+            with unwrap_model_for_generation(
+                model, self.accelerator
+            ) as unwrapped_model:
+                prompt_completion_ids = unwrapped_model.generate(
+                    **prompt_inputs,
+                    generation_config=self.generation_config,
+                    use_model_defaults=False,  # 不使用模型默认值, 否则可能会覆盖generation_config
+                )
+
+                prompt_length = prompt_ids.size(1)
+                prompt_ids = prompt_completion_ids[:, :prompt_length]
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+
+                if shuffled_prompt_ids is not None:
+                    shuffled_prompt_completion_ids = unwrapped_model.generate(
+                        **shuffled_prompt_inputs,
+                        generation_config=self.shuffled_generation_config,
+                        use_model_defaults=False,
+                    )
+                    shuffled_prompt_length = shuffled_prompt_ids.size(1)
+                    shuffled_completion_ids = shuffled_prompt_completion_ids[
+                        :, shuffled_prompt_length:
+                    ]
 
         # 生成补全掩码：控制张量大小，避免冗余
         is_eos = completion_ids == self.processing_class.eos_token_id
