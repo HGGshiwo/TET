@@ -100,6 +100,7 @@ training_args = GRPOConfig(
     use_vllm=use_vllm,  # uses vLLM
     use_unsloth=use_unsloth,
     output_dir=OUTPUT_PATH,
+    seed=1234,
     num_train_epochs=EPOCH_NUM,
     per_device_train_batch_size=1,
     per_device_eval_batch_size=8,
@@ -130,8 +131,8 @@ training_args = GRPOConfig(
     generation_batch_size=8,  # not use
     temporal=False,
     len_control=False,
-    temperature=1.4,
-    beta=0.04,
+    temperature=1.2,
+    beta=0.001,
 )
 
 # unsloth自己管理量化, 这里不传bnb

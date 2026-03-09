@@ -540,6 +540,7 @@ class Qwen2VLGRPOTrainer(Trainer):
             prompt_length = prompt_ids.size(1)
             prompt_ids = prompt_completion_ids[:, :prompt_length]
             completion_ids = prompt_completion_ids[:, prompt_length:]
+            # prompt_completion_ids 在 logps 计算完后释放
 
             if shuffled_prompt_ids is not None:
                 if self._use_vllm:
@@ -559,6 +560,7 @@ class Qwen2VLGRPOTrainer(Trainer):
                 shuffled_completion_ids = shuffled_prompt_completion_ids[
                     :, shuffled_prompt_length:
                 ]
+                del shuffled_prompt_completion_ids
             # 切换回训练模式：关闭 use_cache，恢复 gradient checkpointing
             FastVisionModel.for_training(model)
         else:
@@ -585,6 +587,7 @@ class Qwen2VLGRPOTrainer(Trainer):
                     shuffled_completion_ids = shuffled_prompt_completion_ids[
                         :, shuffled_prompt_length:
                     ]
+                    del shuffled_prompt_completion_ids
 
         # 生成补全掩码：控制张量大小，避免冗余
         is_eos = completion_ids == self.processing_class.eos_token_id
@@ -600,11 +603,14 @@ class Qwen2VLGRPOTrainer(Trainer):
         # 释放临时张量
         del is_eos, eos_idx, sequence_indices
 
+        # repeat_num 为生成的序列总数（= batch_size * num_generations），用于将视觉张量与每条生成序列对应
+        repeat_num = completion_ids.size(0)
+        completion_ids_len = completion_ids.size(1)
+
         # 处理视觉输入张量：使用expand代替repeat（视图复用），减少显存
         prompt_inputs.pop("input_ids")
         prompt_inputs.pop("attention_mask")
         data_type = inputs[0]["data_type"]
-        repeat_num = len(prompt_completion_ids)
 
         if data_type == "image":
             # expand代替repeat，减少数据复制
@@ -642,6 +648,8 @@ class Qwen2VLGRPOTrainer(Trainer):
                         model, prompt_completion_ids, **prompt_inputs
                     )
             ref_per_token_logps = ref_per_token_logps[:, prompt_length - 1 :]
+        # 释放 prompt_completion_ids、prompt_inputs（含大型视觉张量）和 prompt_ids，后续不再需要
+        del prompt_completion_ids, prompt_inputs, prompt_ids
 
         # 计算KL散度：裁剪数值范围，减少异常值，同时释放临时张量
         x_clamped = torch.clamp(ref_per_token_logps - per_token_logps, min=-10, max=10)
@@ -698,6 +706,8 @@ class Qwen2VLGRPOTrainer(Trainer):
         completions = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
         )
+        # completion_ids 解码完毕后不再需要
+        del completion_ids
         if is_conversational(inputs[0]):
             completions = [
                 [{"role": "assistant", "content": completion}]
@@ -743,11 +753,12 @@ class Qwen2VLGRPOTrainer(Trainer):
                 temporal_rewards = torch.tensor(
                     [1.0], device=device, dtype=torch.float32
                 )
+                del mask
             else:
                 temporal_rewards = torch.tensor(
                     [0.0], device=device, dtype=torch.float32
                 )
-            del acc_mean, shuffled_acc_mean, mask
+            del acc_mean, shuffled_acc_mean
 
         # 奖励求和：控制数据类型，减少显存
         if shuffled_completion_ids is not None:
@@ -795,7 +806,7 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # 日志指标计算：使用accelerator.gather_for_metrics，减少显存
         completion_length = self.accelerator.gather_for_metrics(
-            completion_ids.size(1) * torch.ones_like(completion_mask.sum(1))
+            completion_ids_len * torch.ones_like(completion_mask.sum(1))
         )
         completion_length = completion_length.float().mean().item()
 
@@ -842,8 +853,15 @@ class Qwen2VLGRPOTrainer(Trainer):
             wrong_devices,
             correct_devices,
             reward_per_func,
-            completion_length,
+            rewards,
+            rewards_per_func,
+            per_token_logps,
+            completion_mask,
+            temporal_rewards,
         )
+        if shuffled_completion_ids is not None:
+            del shuffled_completion_ids, shuffled_rewards_per_func, temporal_rewards_per_func
+        torch.cuda.empty_cache()
         return loss
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
