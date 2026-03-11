@@ -88,34 +88,28 @@ class GRPOConfig(_GRPOConfig):
     len_control: bool = field(default=False)
     temperature: float = field(default=1)
     use_vllm: bool = field(default=False, metadata={"help": "是否使用 vllm 加速训练。"})
-    use_unsloth: bool = (
-        field(
-            default=False,
-            metadata={
-                "help": (
-                    "是否使用 unsloth 加速训练。启用后将使用 unsloth 的 FastVisionModel 加载模型，"
-                    "可显著降低显存占用并提升训练速度（需要安装 unsloth 包）。"
-                    "若 unsloth 未安装，该参数会被忽略并回退到标准加载方式。"
-                )
-            },
-        ),
+    use_unsloth: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "是否使用 unsloth 加速训练。启用后将使用 unsloth 的 FastVisionModel 加载模型，"
+                "可显著降低显存占用并提升训练速度（需要安装 unsloth 包）。"
+                "若 unsloth 未安装，该参数会被忽略并回退到标准加载方式。"
+            )
+        },
     )
-    reward_type: str = (
-        field(
-            default=None,
-            metadata={
-                "help": (
-                    "baseline: 使用默认reward"
-                    "mode_inner_outer: 例如step_mean_min -> mode=step, inner_agg=mean, outer_agg=min"
-                )
-            },
-        ),
+    reward_type: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "baseline: 使用默认reward"
+                "mode_inner_outer: 例如step_mean_min -> mode=step, inner_agg=mean, outer_agg=min"
+            )
+        },
     )
-    bottom_k_ratio: float = (
-        field(
-            defalut=0.2,
-            metadata={"help": "当agg为bottom_k的时候, 设置k的大小, 默认后20%"},
-        ),
+    bottom_k_ratio: float = field(
+        default=0.2,
+        metadata={"help": "当agg为bottom_k的时候, 设置k的大小, 默认后20%"},
     )
     alpha: float = field(default=0.5, metadata={"help": "置信度奖励的权重超参"})
 
@@ -149,7 +143,11 @@ class ConfidenceRewardComputer:
         inner_agg: 'mean', 'min', 'bottom_k' (Token -> Step)
         outer_agg: 'mean', 'min' (Step -> Reward)
         """
-        print("We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(mode, inner_agg, outer_agg, bottom_k_ratio, alpha))
+        print(
+            "We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(
+                mode, inner_agg, outer_agg, bottom_k_ratio, alpha
+            )
+        )
         self.mode = mode
         self.inner_agg = inner_agg
         self.outer_agg = outer_agg
@@ -185,13 +183,13 @@ class ConfidenceRewardComputer:
         # 情况 1: Token 级别 (直接对所有 token 聚合一次)
         if self.mode == "token":
             flat_indices = [idx for step in step_indices for idx in step]
-            if not flat_indices: # 防御：如果全是空的
+            if not flat_indices:  # 防御：如果全是空的
                 return 0.0
-                
+
             # all_logprobs 是 1D Tensor，直接用列表做索引提取
-            valid_logprobs = all_logprobs[flat_indices] 
+            valid_logprobs = all_logprobs[flat_indices]
             return self._aggregate(valid_logprobs, self.inner_agg)
-        
+
         # 情况 2: Step 级别 (两阶段聚合)
         elif self.mode == "step":
             step_scores = []
@@ -936,7 +934,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         reward_func_num = len(self.reward_funcs)
         if self.cfc is not None:
             reward_func_num += 1  # 加上置信度奖励函数
-            
+
         rewards_per_func = torch.zeros(
             len(prompts), reward_func_num, device=device, dtype=torch.float32
         )
@@ -957,8 +955,10 @@ class Qwen2VLGRPOTrainer(Trainer):
                 output_reward_func = reward_func(
                     prompts=prompts, completions=completions, **reward_kwargs
                 )
-            if i == 0: # 第一个reward是计算是否正确的
-                correct_flags = [0 if reward < 1 else 1 for reward in output_reward_func]
+            if i == 0:  # 第一个reward是计算是否正确的
+                correct_flags = [
+                    0 if reward < 1 else 1 for reward in output_reward_func
+                ]
             rewards_per_func[:, i] = torch.tensor(
                 output_reward_func, dtype=torch.float32, device=device
             )
@@ -969,8 +969,10 @@ class Qwen2VLGRPOTrainer(Trainer):
                     batch_completion_logps=per_token_logps,
                     correct_flags=correct_flags,
                 )
-            rewards_per_func[:, -1] = torch.tensor(confidence_rewards, dtype=torch.float32, device=device)
-            
+            rewards_per_func[:, -1] = torch.tensor(
+                confidence_rewards, dtype=torch.float32, device=device
+            )
+
         # 释放临时变量
         del completions, prompts, reward_kwargs, completion_ids
 
@@ -1062,10 +1064,11 @@ class Qwen2VLGRPOTrainer(Trainer):
         rewards_per_device = gathered_rewards.view(num_devices, self.num_generations)
         wrong_devices = (rewards_per_device < 1).all(dim=1)
         wrong_ratio = wrong_devices.sum().item() / num_devices
-        correct_devices = (rewards_per_device == 1).all(dim=1)
+        correct_devices = (rewards_per_device >= 1).all(dim=1)
         correct_ratio = correct_devices.sum().item() / num_devices
 
         # 一个step中全对/全错的样本, 1 - all_wrong - all_correct是有效样本比例
+        # device = 1时，记录的是多个步骤平均值，所以可能在0-1之间
         self._metrics["all_wrong"].append(wrong_ratio)
         self._metrics["all_correct"].append(correct_ratio)
 

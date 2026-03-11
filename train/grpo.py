@@ -28,7 +28,10 @@ from typing import List, Optional, Dict, Any
 
 USE_DOCKER = True
 base_model_id = "sft8_2-merge"
-output_model_id = "sft8_2-merge_r1_2"
+output_model_id = "sft8_2-merge_r1_3"
+reward_type = "step_mean_min"  #
+# reward_type = None
+
 if not USE_DOCKER:
     data_cfg_path = "dataset_cfg.yml"
     dataset_cfg_path = "dataset.yml"
@@ -133,6 +136,7 @@ training_args = GRPOConfig(
     len_control=False,
     temperature=1.2,
     beta=0.001,
+    reward_type=reward_type
 )
 
 # unsloth自己管理量化, 这里不传bnb
@@ -198,6 +202,11 @@ def compute_metrics(eval_pred):
     logits, labels = eval_pred
     return {"accuracy": labels.mean()}
 
+trainer_kwargs = {}
+
+if training_args.reward_type is not None:
+    trainer_kwargs["split_token_id"] = processor.tokenizer.convert_tokens_to_ids(prompt.split_token)
+    trainer_kwargs["step_split_token_id"] = processor.tokenizer.convert_tokens_to_ids(prompt.step_split_token)
 
 trainer = Qwen2VLGRPOTrainer(
     reward_funcs=[reward_func],
@@ -209,6 +218,7 @@ trainer = Qwen2VLGRPOTrainer(
     peft_config=peft_config,
     compute_metrics=compute_metrics,
     accuracy_compare_func=accuracy_compare_func,
+    **trainer_kwargs
 )
 
 trainer.train()
