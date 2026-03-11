@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import textwrap
 from collections import defaultdict
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 import random
 
 from peft import PeftModel
@@ -88,16 +88,36 @@ class GRPOConfig(_GRPOConfig):
     len_control: bool = field(default=False)
     temperature: float = field(default=1)
     use_vllm: bool = field(default=False, metadata={"help": "是否使用 vllm 加速训练。"})
-    use_unsloth: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "是否使用 unsloth 加速训练。启用后将使用 unsloth 的 FastVisionModel 加载模型，"
-                "可显著降低显存占用并提升训练速度（需要安装 unsloth 包）。"
-                "若 unsloth 未安装，该参数会被忽略并回退到标准加载方式。"
-            )
-        },
+    use_unsloth: bool = (
+        field(
+            default=False,
+            metadata={
+                "help": (
+                    "是否使用 unsloth 加速训练。启用后将使用 unsloth 的 FastVisionModel 加载模型，"
+                    "可显著降低显存占用并提升训练速度（需要安装 unsloth 包）。"
+                    "若 unsloth 未安装，该参数会被忽略并回退到标准加载方式。"
+                )
+            },
+        ),
     )
+    reward_type: str = (
+        field(
+            default=None,
+            metadata={
+                "help": (
+                    "baseline: 使用默认reward"
+                    "mode_inner_outer: 例如step_mean_min -> mode=step, inner_agg=mean, outer_agg=min"
+                )
+            },
+        ),
+    )
+    bottom_k_ratio: float = (
+        field(
+            defalut=0.2,
+            metadata={"help": "当agg为bottom_k的时候, 设置k的大小, 默认后20%"},
+        ),
+    )
+    alpha: float = field(default=0.5, metadata={"help": "置信度奖励的权重超参"})
 
 
 def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
@@ -111,6 +131,182 @@ def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
 
     origin_size[dim] = origin_size[dim] * repeat_num
     return tensor.unsqueeze(dim).expand(expand_size).reshape(origin_size)
+
+
+class ConfidenceRewardComputer:
+    def __init__(
+        self,
+        split_token_id: int,
+        step_split_token_id: int,
+        mode="step",
+        inner_agg="mean",
+        outer_agg="min",
+        bottom_k_ratio=0.2,
+        alpha=0.5,
+    ):
+        """
+        mode: 'token' 或 'step'
+        inner_agg: 'mean', 'min', 'bottom_k' (Token -> Step)
+        outer_agg: 'mean', 'min' (Step -> Reward)
+        """
+        print("We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(mode, inner_agg, outer_agg, bottom_k_ratio, alpha))
+        self.mode = mode
+        self.inner_agg = inner_agg
+        self.outer_agg = outer_agg
+        self.bottom_k_ratio = bottom_k_ratio
+        self.alpha = alpha
+        self.split_token_id = split_token_id
+        self.step_split_token_id = step_split_token_id
+
+    def _aggregate(self, logprobs_tensor, method):
+        """核心聚合算子"""
+        if len(logprobs_tensor) == 0:
+            return 0.0  # 防御性编程
+
+        if method == "mean":
+            return logprobs_tensor.mean().item()
+        elif method == "min":
+            return logprobs_tensor.min().item()
+        elif method == "bottom_k":
+            k = max(1, int(len(logprobs_tensor) * self.bottom_k_ratio))
+            # 取最小的 K 个求均值
+            bottom_k_vals, _ = torch.topk(logprobs_tensor, k, largest=False)
+            return bottom_k_vals.mean().item()
+        else:
+            raise ValueError(f"Unknown aggregation method: {method}")
+
+    def compute_reward(self, all_logprobs, step_indices):
+        """
+        计算单条样本的置信度 Reward
+        all_logprobs: Tensor, 形状 [N], 所有输出的对数概率
+        step_indices: List[List[int]], 记录每个 step 包含的 token 索引。
+                      例如: [[0,1,2,3], [4,5,6], [7,8]]
+        """
+        # 情况 1: Token 级别 (直接对所有 token 聚合一次)
+        if self.mode == "token":
+            flat_indices = [idx for step in step_indices for idx in step]
+            if not flat_indices: # 防御：如果全是空的
+                return 0.0
+                
+            # all_logprobs 是 1D Tensor，直接用列表做索引提取
+            valid_logprobs = all_logprobs[flat_indices] 
+            return self._aggregate(valid_logprobs, self.inner_agg)
+        
+        # 情况 2: Step 级别 (两阶段聚合)
+        elif self.mode == "step":
+            step_scores = []
+
+            # Phase 1: Inner Aggregation (Token -> Step)
+            for indices in step_indices:
+                if len(indices) == 0:
+                    continue
+                step_logprobs = all_logprobs[indices]
+                step_score = self._aggregate(step_logprobs, self.inner_agg)
+                step_scores.append(step_score)
+
+            if not step_scores:
+                return 0.0  # 防御性编程
+
+            step_scores_tensor = torch.tensor(step_scores)
+
+            # Phase 2: Outer Aggregation (Step -> Reward)
+            final_reward = self._aggregate(step_scores_tensor, self.outer_agg)
+            return final_reward
+
+        else:
+            raise ValueError("Mode must be 'token' or 'step'")
+
+    def get_step_indices(self, batch_completion_ids: torch.Tensor):
+        """获取每个step的token索引, 输入[0, 1, 2, 3, step, 4, 5, 6, step, 7, think, ..., think]
+        输出: [[0, 1, 2, 3], [4, 5, 6], [7]], 注意例子中省略了batch维度"""
+        split_token_id = self.split_token_id
+        step_split_token_id = self.step_split_token_id
+
+        batch_step_indices = []
+        for completion_ids in batch_completion_ids:
+            # 找到 split_token 出现的位置
+            split_positions = (completion_ids == split_token_id).nonzero(as_tuple=True)[
+                0
+            ]
+            # 确定第一个部分的范围（从开头到第一个 split_token 之前）
+            if len(split_positions) != 2:
+                batch_step_indices.append(None)  # 格式错误
+                continue
+            else:
+                think_start, think_end = 0, split_positions[0].item()
+
+            # 提取第一个部分的 token ids
+            think_ids = completion_ids[think_start:think_end]
+
+            # 在第一个部分内找到 step_split_token 的位置
+            step_positions = (think_ids == step_split_token_id).nonzero(as_tuple=True)[
+                0
+            ]
+
+            # 切分得到该样本的 step indices（绝对索引）
+            sample_step_indices = []
+            prev = 0
+            for pos in step_positions:
+                pos_item = pos.item()
+                if prev < pos_item:  # 非空 step
+                    step_indices = list(
+                        range(think_start + prev, think_start + pos_item)
+                    )
+                    sample_step_indices.append(step_indices)
+                prev = pos_item + 1
+            # 处理最后一个 step
+            if prev < len(think_ids):
+                step_indices = list(
+                    range(think_start + prev, think_start + len(think_ids))
+                )
+                sample_step_indices.append(step_indices)
+
+            batch_step_indices.append(sample_step_indices)
+
+        return batch_step_indices
+
+    def __call__(
+        self,
+        batch_completion_ids: torch.Tensor,
+        batch_completion_logps: torch.Tensor,
+        correct_flags: List[int],
+    ):
+        """
+        计算整个 batch 的置信度奖励
+        batch_completion_ids: Tensor, 形状 [B, N], 包含 B 条样本的 token ids
+        batch_completion_logprobs: Tensor, 形状 [B, N], 包含对应的对数概率
+        """
+        rewards = []
+        batch_step_indices = self.get_step_indices(batch_completion_ids)
+
+        for logprobs, step_indices in zip(batch_completion_logps, batch_step_indices):
+            if step_indices is None:
+                rewards.append(0.0)  # 格式错误的样本奖励为0
+            else:
+                reward = self.compute_reward(logprobs, step_indices)
+                rewards.append(reward)
+
+        conf_scores = torch.tensor(rewards)
+
+        # 1. 组内 Z-Score 归一化 (让置信度相对化，高于平均的为正，低于平均的为负)
+        mean_conf = conf_scores.mean()
+        std_conf = conf_scores.std() + 1e-8
+        normalized_conf = (conf_scores - mean_conf) / std_conf
+
+        # 2. 计算最终 Reward
+
+        final_rewards = []
+
+        for i in range(len(correct_flags)):
+            if correct_flags[i] == 1:
+                # 答对了：置信度加成 (笃定且正确奖励更高，心虚但蒙对的奖励降低)
+                r = self.alpha * normalized_conf[i].item()
+            else:
+                # 答错了：不管多自信，全是 0 分（或者给轻微惩罚 -0.1）
+                r = 0.0
+            final_rewards.append(r)
+
+        return final_rewards
 
 
 class Qwen2VLGRPOTrainer(Trainer):
@@ -135,6 +331,8 @@ class Qwen2VLGRPOTrainer(Trainer):
         attn_implementation: str = "flash_attention_2",
         compute_metrics: Callable = None,
         accuracy_compare_func: Callable = None,
+        split_token_id: int = None,
+        step_split_token_id: int = None,
     ):
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -144,6 +342,27 @@ class Qwen2VLGRPOTrainer(Trainer):
             raise ValueError(
                 f"{self.__class__.__name__} only support train_batch_size==1!"
             )
+
+        if args.reward_type is not None:
+            assert (
+                split_token_id is not None
+            ), "reward_type is not None, but split_token_id is None!"
+            assert (
+                step_split_token_id is not None
+            ), "reward_type is not None, but step_split_token_id is None!"
+            mode, inner_agg, outer_agg = args.reward_type.split("_")
+            self.cfc = ConfidenceRewardComputer(
+                split_token_id=split_token_id,
+                step_split_token_id=step_split_token_id,
+                mode=mode,
+                inner_agg=inner_agg,
+                outer_agg=outer_agg,
+                bottom_k_ratio=args.bottom_k_ratio,
+                alpha=args.alpha,
+            )
+        else:
+            self.cfc = None
+
         # 模型初始化参数优化：启用flash attention减少显存，控制cache使用
         model_init_kwargs = args.model_init_kwargs or {}
         model_init_kwargs["attn_implementation"] = attn_implementation
@@ -524,6 +743,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         # 若启用 unsloth，直接使用模型的 fast_generate 接口以获得更高吞吐
         if self._use_unsloth:
             from unsloth import FastVisionModel
+
             # 切换到推理模式：恢复 use_cache=True，关闭 gradient checkpointing
             FastVisionModel.for_inference(model)
             if self._use_vllm:
@@ -706,8 +926,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         completions = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
         )
-        # completion_ids 解码完毕后不再需要
-        del completion_ids
         if is_conversational(inputs[0]):
             completions = [
                 [{"role": "assistant", "content": completion}]
@@ -715,9 +933,14 @@ class Qwen2VLGRPOTrainer(Trainer):
             ]
 
         prompts = [prompt for prompt in prompts for _ in range(self.num_generations)]
+        reward_func_num = len(self.reward_funcs)
+        if self.cfc is not None:
+            reward_func_num += 1  # 加上置信度奖励函数
+            
         rewards_per_func = torch.zeros(
-            len(prompts), len(self.reward_funcs), device=device, dtype=torch.float32
+            len(prompts), reward_func_num, device=device, dtype=torch.float32
         )
+        correct_flags = None
         for i, (reward_func, reward_processing_class) in enumerate(
             zip(self.reward_funcs, self.reward_processing_classes)
         ):
@@ -734,11 +957,22 @@ class Qwen2VLGRPOTrainer(Trainer):
                 output_reward_func = reward_func(
                     prompts=prompts, completions=completions, **reward_kwargs
                 )
+            if i == 0: # 第一个reward是计算是否正确的
+                correct_flags = [0 if reward < 1 else 1 for reward in output_reward_func]
             rewards_per_func[:, i] = torch.tensor(
                 output_reward_func, dtype=torch.float32, device=device
             )
+        if self.cfc is not None:
+            with torch.inference_mode():
+                confidence_rewards = self.cfc(
+                    batch_completion_ids=completion_ids,
+                    batch_completion_logps=per_token_logps,
+                    correct_flags=correct_flags,
+                )
+            rewards_per_func[:, -1] = torch.tensor(confidence_rewards, dtype=torch.float32, device=device)
+            
         # 释放临时变量
-        del completions, prompts, reward_kwargs
+        del completions, prompts, reward_kwargs, completion_ids
 
         # 时序奖励处理：复用已有张量，减少拷贝
         temporal_rewards = torch.tensor([0.5], device=device, dtype=torch.float32)
@@ -860,7 +1094,11 @@ class Qwen2VLGRPOTrainer(Trainer):
             temporal_rewards,
         )
         if shuffled_completion_ids is not None:
-            del shuffled_completion_ids, shuffled_rewards_per_func, temporal_rewards_per_func
+            del (
+                shuffled_completion_ids,
+                shuffled_rewards_per_func,
+                temporal_rewards_per_func,
+            )
         torch.cuda.empty_cache()
         return loss
 
