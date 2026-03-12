@@ -112,6 +112,10 @@ class GRPOConfig(_GRPOConfig):
         metadata={"help": "当agg为bottom_k的时候, 设置k的大小, 默认后20%"},
     )
     alpha: float = field(default=0.5, metadata={"help": "置信度奖励的权重超参"})
+    reward_per_100_tokens: float = field(
+        default=0,
+        metadata={"help": "每生成100个token奖励的分数，默认为0表示不使用长度奖励"},
+    )
 
 
 def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
@@ -130,24 +134,26 @@ def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
 class ConfidenceRewardComputer:
     def __init__(
         self,
-        split_token_id: int,
-        step_split_token_id: int,
+        split_token_id: int = None,
+        step_split_token_id: int = None,
         mode="step",
         inner_agg="mean",
         outer_agg="min",
         bottom_k_ratio=0.2,
         alpha=0.5,
+        reward_per_100_tokens=0,
     ):
         """
         mode: 'token' 或 'step'
         inner_agg: 'mean', 'min', 'bottom_k' (Token -> Step)
         outer_agg: 'mean', 'min' (Step -> Reward)
         """
-        print(
-            "We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(
-                mode, inner_agg, outer_agg, bottom_k_ratio, alpha
+        if alpha != 0:
+            print(
+                "We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(
+                    mode, inner_agg, outer_agg, bottom_k_ratio, alpha
+                )
             )
-        )
         self.mode = mode
         self.inner_agg = inner_agg
         self.outer_agg = outer_agg
@@ -155,6 +161,7 @@ class ConfidenceRewardComputer:
         self.alpha = alpha
         self.split_token_id = split_token_id
         self.step_split_token_id = step_split_token_id
+        self.reward_per_100_tokens = reward_per_100_tokens
 
     def _aggregate(self, logprobs_tensor, method):
         """核心聚合算子"""
@@ -214,95 +221,113 @@ class ConfidenceRewardComputer:
         else:
             raise ValueError("Mode must be 'token' or 'step'")
 
-    def get_step_indices(self, batch_completion_ids: torch.Tensor):
+    def get_step_indices(self, completion_ids: torch.Tensor):
         """获取每个step的token索引, 输入[0, 1, 2, 3, step, 4, 5, 6, step, 7, think, ..., think]
-        输出: [[0, 1, 2, 3], [4, 5, 6], [7]], 注意例子中省略了batch维度"""
+        输出: [[0, 1, 2, 3], [4, 5, 6], [7]]"""
         split_token_id = self.split_token_id
         step_split_token_id = self.step_split_token_id
 
-        batch_step_indices = []
-        for completion_ids in batch_completion_ids:
-            # 找到 split_token 出现的位置
-            split_positions = (completion_ids == split_token_id).nonzero(as_tuple=True)[
-                0
-            ]
-            # 确定第一个部分的范围（从开头到第一个 split_token 之前）
-            if len(split_positions) != 2:
-                batch_step_indices.append(None)  # 格式错误
-                continue
-            else:
-                think_start, think_end = 0, split_positions[0].item()
+        # 找到 split_token 出现的位置
+        split_positions = (completion_ids == split_token_id).nonzero(as_tuple=True)[0]
+        # 确定第一个部分的范围（从开头到第一个 split_token 之前）
+        if len(split_positions) != 2:
+            return None
+        else:
+            think_start, think_end = 0, split_positions[0].item()
 
-            # 提取第一个部分的 token ids
-            think_ids = completion_ids[think_start:think_end]
+        # 提取第一个部分的 token ids
+        think_ids = completion_ids[think_start:think_end]
 
-            # 在第一个部分内找到 step_split_token 的位置
-            step_positions = (think_ids == step_split_token_id).nonzero(as_tuple=True)[
-                0
-            ]
+        # 在第一个部分内找到 step_split_token 的位置
+        step_positions = (think_ids == step_split_token_id).nonzero(as_tuple=True)[0]
 
-            # 切分得到该样本的 step indices（绝对索引）
-            sample_step_indices = []
-            prev = 0
-            for pos in step_positions:
-                pos_item = pos.item()
-                if prev < pos_item:  # 非空 step
-                    step_indices = list(
-                        range(think_start + prev, think_start + pos_item)
-                    )
-                    sample_step_indices.append(step_indices)
-                prev = pos_item + 1
-            # 处理最后一个 step
-            if prev < len(think_ids):
-                step_indices = list(
-                    range(think_start + prev, think_start + len(think_ids))
-                )
+        # 切分得到该样本的 step indices（绝对索引）
+        sample_step_indices = []
+        prev = 0
+        for pos in step_positions:
+            pos_item = pos.item()
+            if prev < pos_item:  # 非空 step
+                step_indices = list(range(think_start + prev, think_start + pos_item))
                 sample_step_indices.append(step_indices)
+            prev = pos_item + 1
+        # 处理最后一个 step
+        if prev < len(think_ids):
+            step_indices = list(range(think_start + prev, think_start + len(think_ids)))
+            sample_step_indices.append(step_indices)
 
-            batch_step_indices.append(sample_step_indices)
-
-        return batch_step_indices
+        return sample_step_indices
 
     def __call__(
         self,
         batch_completion_ids: torch.Tensor,
         batch_completion_logps: torch.Tensor,
         correct_flags: List[int],
+        format_flags: List[int],
+        completion_mask: torch.Tensor,
     ):
         """
         计算整个 batch 的置信度奖励
         batch_completion_ids: Tensor, 形状 [B, N], 包含 B 条样本的 token ids
         batch_completion_logprobs: Tensor, 形状 [B, N], 包含对应的对数概率
+
+        retrun: Tensor 形状[B, 4]:
+        [format_reward, correct_reward, confidence_reward, length_reward]
         """
-        rewards = []
-        batch_step_indices = self.get_step_indices(batch_completion_ids)
 
-        for logprobs, step_indices in zip(batch_completion_logps, batch_step_indices):
-            if step_indices is None:
-                rewards.append(0.0)  # 格式错误的样本奖励为0
-            else:
-                reward = self.compute_reward(logprobs, step_indices)
-                rewards.append(reward)
+        if self.alpha != 0:
+            rewards = []
 
-        conf_scores = torch.tensor(rewards)
+            for completion_ids, logprobs, mask in zip(
+                batch_completion_ids, batch_completion_logps, completion_mask
+            ):
+                mask = mask.bool()
+                logprobs = logprobs[mask]  # 只保留有效 token 的 logprobs
+                completion_ids = completion_ids[mask]
 
-        # 1. 组内 Z-Score 归一化 (让置信度相对化，高于平均的为正，低于平均的为负)
-        mean_conf = conf_scores.mean()
-        std_conf = conf_scores.std() + 1e-8
-        normalized_conf = (conf_scores - mean_conf) / std_conf
+                step_indices = self.get_step_indices(completion_ids)
+                if step_indices is None:
+                    rewards.append(0.0)  # 格式错误的样本奖励为0
+                else:
+                    reward = self.compute_reward(logprobs, step_indices)
+                    rewards.append(reward)
+
+            conf_scores = torch.tensor(rewards)
+
+            # 1. 组内 Z-Score 归一化 (让置信度相对化，高于平均的为正，低于平均的为负)
+            mean_conf = conf_scores.mean()
+            std_conf = conf_scores.std() + 1e-8
+            normalized_conf = (conf_scores - mean_conf) / std_conf
+        else:
+            normalized_conf = torch.zeros(
+                len(batch_completion_ids)
+            )  # 全零，避免后续计算错误
 
         # 2. 计算最终 Reward
 
         final_rewards = []
 
         for i in range(len(correct_flags)):
+            final_reward = [0 for i in range(4)]
+            final_reward[0] = -0.5 if format_flags[i] == 0 else 0
+            final_reward[1] = 0 if correct_flags[i] == 0 else 1
             if correct_flags[i] == 1:
                 # 答对了：置信度加成 (笃定且正确奖励更高，心虚但蒙对的奖励降低)
-                r = self.alpha * normalized_conf[i].item()
+                # 不管怎样不给负的奖励
+                r = self.alpha * torch.max(torch.tensor(0.0), normalized_conf[i]).item()
             else:
-                # 答错了：不管多自信，全是 0 分（或者给轻微惩罚 -0.1）
-                r = 0.0
-            final_rewards.append(r)
+                if normalized_conf[i] > 0:
+                    # 答错了但很自信：给轻微惩罚，鼓励模型修正过于自信的错误
+                    r = -0.1 * normalized_conf[i].item()
+                else:
+                    # 答错了但是不自信: 0分
+                    r = 0.0
+            final_reward[2] = r
+            if self.reward_per_100_tokens is not None:
+                final_reward[3] = self.reward_per_100_tokens * (
+                    len(completion_ids) / 100
+                )
+
+            final_rewards.append(final_reward)
 
         return final_rewards
 
@@ -311,7 +336,7 @@ class Qwen2VLGRPOTrainer(Trainer):
     def __init__(
         self,
         model: Union[str, PreTrainedModel],
-        reward_funcs: Union[RewardFunc, list[RewardFunc]],
+        check_correct_func: Callable,
         args: GRPOConfig = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
@@ -348,18 +373,21 @@ class Qwen2VLGRPOTrainer(Trainer):
             assert (
                 step_split_token_id is not None
             ), "reward_type is not None, but step_split_token_id is None!"
+            assert args.alpha != 0, "reward_type is not None, but alpha = 0!"
+
             mode, inner_agg, outer_agg = args.reward_type.split("_")
-            self.cfc = ConfidenceRewardComputer(
-                split_token_id=split_token_id,
-                step_split_token_id=step_split_token_id,
-                mode=mode,
-                inner_agg=inner_agg,
-                outer_agg=outer_agg,
-                bottom_k_ratio=args.bottom_k_ratio,
-                alpha=args.alpha,
-            )
         else:
-            self.cfc = None
+            mode, inner_agg, outer_agg = None, None, None
+        self.cfc = ConfidenceRewardComputer(
+            split_token_id=split_token_id,
+            step_split_token_id=step_split_token_id,
+            mode=mode,
+            inner_agg=inner_agg,
+            outer_agg=outer_agg,
+            bottom_k_ratio=args.bottom_k_ratio,
+            alpha=args.alpha,
+            reward_per_100_tokens=args.reward_per_100_tokens,
+        )
 
         # 模型初始化参数优化：启用flash attention减少显存，控制cache使用
         model_init_kwargs = args.model_init_kwargs or {}
@@ -510,42 +538,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         processing_class.pad_token_id = pad_token_id
         processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
 
-        # 奖励函数初始化：批量处理，减少重复加载
-        if not isinstance(reward_funcs, list):
-            reward_funcs = [reward_funcs]
-        for i, reward_func in enumerate(reward_funcs):
-            if isinstance(reward_func, str):
-                reward_funcs[i] = AutoModelForSequenceClassification.from_pretrained(
-                    reward_func, num_labels=1, **model_init_kwargs
-                )
-        self.reward_funcs = reward_funcs
-
-        # 奖励处理类初始化：按需加载，避免冗余
-        if reward_processing_classes is None:
-            reward_processing_classes = [None] * len(reward_funcs)
-        elif not isinstance(reward_processing_classes, list):
-            reward_processing_classes = [reward_processing_classes]
-        else:
-            if len(reward_processing_classes) != len(reward_funcs):
-                raise ValueError(
-                    "The number of reward processing classes must match the number of reward functions."
-                )
-
-        for i, (reward_processing_class, reward_func) in enumerate(
-            zip(reward_processing_classes, reward_funcs)
-        ):
-            if isinstance(reward_func, PreTrainedModel):
-                if reward_processing_class is None:
-                    reward_processing_class = AutoTokenizer.from_pretrained(
-                        reward_func.config._name_or_path
-                    )
-                if reward_processing_class.pad_token_id is None:
-                    reward_processing_class.pad_token = (
-                        reward_processing_class.eos_token
-                    )
-                reward_func.config.pad_token_id = reward_processing_class.pad_token_id
-                reward_processing_classes[i] = reward_processing_class
-        self.reward_processing_classes = reward_processing_classes
+        self.check_correct = check_correct_func
 
         # 数据collator保持原有逻辑
         def data_collator(features):
@@ -602,12 +595,6 @@ class Qwen2VLGRPOTrainer(Trainer):
             else:
                 self.ref_model = self.accelerator.prepare_model(
                     self.ref_model, evaluation_mode=True
-                )
-
-        for i, reward_func in enumerate(self.reward_funcs):
-            if isinstance(reward_func, PreTrainedModel):
-                self.reward_funcs[i] = self.accelerator.prepare_model(
-                    reward_func, evaluation_mode=True
                 )
 
     def _set_signature_columns_if_needed(self):
@@ -874,52 +861,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         per_token_kl = torch.exp(x_clamped) - x_clamped - 1
         del x_clamped, ref_per_token_logps
 
-        # 时序奖励计算：仅在有视频输入时处理，避免冗余
-        shuffled_rewards_per_func = None
-        if shuffled_completion_ids is not None:
-            shuffled_completions = self.processing_class.batch_decode(
-                shuffled_completion_ids, skip_special_tokens=True
-            )
-            if is_conversational(inputs[0]):
-                shuffled_completions = [
-                    [{"role": "assistant", "content": shuffled_completion}]
-                    for shuffled_completion in shuffled_completions
-                ]
-
-            shuffled_prompts = [
-                prompt
-                for prompt in prompts
-                for _ in range(self.shuffled_num_generations)
-            ]
-            shuffled_rewards_per_func = torch.zeros(
-                len(shuffled_prompts), len(self.reward_funcs), device=device
-            )
-            for i, (reward_func, reward_processing_class) in enumerate(
-                zip(self.reward_funcs, self.reward_processing_classes)
-            ):
-                shuffled_reward_kwargs = {
-                    key: []
-                    for key in inputs[0].keys()
-                    if key not in ["prompt", "completion"]
-                }
-                for key in shuffled_reward_kwargs:
-                    for example in inputs:
-                        shuffled_reward_kwargs[key].extend(
-                            [example[key]] * self.shuffled_num_generations
-                        )
-                # 推理模式计算奖励，减少显存
-                with torch.inference_mode():
-                    shuffled_output_reward_func = reward_func(
-                        prompts=shuffled_prompts,
-                        completions=shuffled_completions,
-                        **shuffled_reward_kwargs,
-                    )
-                shuffled_rewards_per_func[:, i] = torch.tensor(
-                    shuffled_output_reward_func, dtype=torch.float32, device=device
-                )
-            # 释放临时变量
-            del shuffled_completions, shuffled_prompts, shuffled_reward_kwargs
-
         # 解码补全序列并计算奖励：推理模式减少显存
         completions = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
@@ -931,93 +872,32 @@ class Qwen2VLGRPOTrainer(Trainer):
             ]
 
         prompts = [prompt for prompt in prompts for _ in range(self.num_generations)]
-        reward_func_num = len(self.reward_funcs)
-        if self.cfc is not None:
-            reward_func_num += 1  # 加上置信度奖励函数
+        input_truth = [
+            example["truth"] for example in inputs for _ in range(self.num_generations)
+        ]
 
-        rewards_per_func = torch.zeros(
-            len(prompts), reward_func_num, device=device, dtype=torch.float32
+        correct_flags, format_flags = self.check_correct(
+            completions=completions, truth=input_truth
         )
-        correct_flags = None
-        for i, (reward_func, reward_processing_class) in enumerate(
-            zip(self.reward_funcs, self.reward_processing_classes)
-        ):
-            reward_kwargs = {
-                key: []
-                for key in inputs[0].keys()
-                if key not in ["prompt", "completion"]
-            }
-            for key in reward_kwargs:
-                for example in inputs:
-                    reward_kwargs[key].extend([example[key]] * self.num_generations)
-            # 推理模式计算奖励，禁止梯度计算，减少显存
-            with torch.inference_mode():
-                output_reward_func = reward_func(
-                    prompts=prompts, completions=completions, **reward_kwargs
-                )
-            if i == 0:  # 第一个reward是计算是否正确的
-                correct_flags = [
-                    0 if reward < 1 else 1 for reward in output_reward_func
-                ]
-            rewards_per_func[:, i] = torch.tensor(
-                output_reward_func, dtype=torch.float32, device=device
-            )
-        if self.cfc is not None:
-            with torch.inference_mode():
-                confidence_rewards = self.cfc(
-                    batch_completion_ids=completion_ids,
-                    batch_completion_logps=per_token_logps,
-                    correct_flags=correct_flags,
-                )
-            rewards_per_func[:, -1] = torch.tensor(
-                confidence_rewards, dtype=torch.float32, device=device
-            )
-
+        # (B, 4) -> [format_reward, correct_reward, confidence_reward, length_reward]
+        raw_rewards = self.cfc(
+            batch_completion_ids=completion_ids,
+            batch_completion_logps=per_token_logps,
+            correct_flags=correct_flags,
+            format_flags=format_flags,
+            completion_mask=completion_mask,
+        )
+        rewards = torch.tensor(raw_rewards, device=device, dtype=torch.float32)
         # 释放临时变量
-        del completions, prompts, reward_kwargs, completion_ids
-
-        # 时序奖励处理：复用已有张量，减少拷贝
-        temporal_rewards = torch.tensor([0.5], device=device, dtype=torch.float32)
-        if shuffled_completion_ids is not None:
-            temporal_rewards_per_func = rewards_per_func.clone()
-            acc_mean = temporal_rewards_per_func[:, 0].mean()
-            shuffled_acc_mean = shuffled_rewards_per_func[:, 0].mean()
-
-            if acc_mean >= 0.8 * shuffled_acc_mean:
-                mask = temporal_rewards_per_func[:, 0] > 0.1
-                temporal_rewards_per_func[mask, 0] += 0.3
-                temporal_rewards = torch.tensor(
-                    [1.0], device=device, dtype=torch.float32
-                )
-                del mask
-            else:
-                temporal_rewards = torch.tensor(
-                    [0.0], device=device, dtype=torch.float32
-                )
-            del acc_mean, shuffled_acc_mean
+        del completions, prompts, completion_ids
 
         # 奖励求和：控制数据类型，减少显存
-        if shuffled_completion_ids is not None:
-            rewards = temporal_rewards_per_func.sum(dim=1)
-        else:
-            rewards = rewards_per_func.sum(dim=1)
-
-        # 长度控制奖励：按需处理，释放临时张量
-        if self.len_control:
-            mask = rewards_per_func[:, 0] > 0.1
-            lenth_list = completion_mask.sum(1)
-            selected_indices = torch.nonzero(mask, as_tuple=True)[0].tolist()
-
-            if len(selected_indices) > 1:
-                for idx in selected_indices:
-                    if 320 <= lenth_list[idx] <= 512:
-                        rewards[idx] += 0.2
-            del mask, lenth_list, selected_indices
+        rewards_sum = rewards.sum(dim=1)
 
         # 计算分组奖励：复用张量形状，减少拷贝
         grouped_shape = (-1, self.num_generations)
-        mean_grouped_rewards = rewards.view(grouped_shape).mean(dim=1)
-        std_grouped_rewards = rewards.view(grouped_shape).std(dim=1)
+        mean_grouped_rewards = rewards_sum.view(grouped_shape).mean(dim=1)
+        std_grouped_rewards = rewards_sum.view(grouped_shape).std(dim=1)
 
         # 归一化优势值：使用expand代替repeat_interleave，减少数据复制
         mean_grouped_rewards = mean_grouped_rewards.expand(
@@ -1026,7 +906,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         std_grouped_rewards = std_grouped_rewards.expand(
             self.num_generations, -1
         ).reshape(-1)
-        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+        advantages = (rewards_sum - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
         del mean_grouped_rewards, std_grouped_rewards
 
         # 计算损失：控制计算图，减少显存
@@ -1041,67 +921,30 @@ class Qwen2VLGRPOTrainer(Trainer):
         del per_token_loss, advantages, per_token_kl
 
         # 日志指标计算：使用accelerator.gather_for_metrics，减少显存
-        completion_length = self.accelerator.gather_for_metrics(
-            completion_ids_len * torch.ones_like(completion_mask.sum(1))
-        )
+        completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1))
         completion_length = completion_length.float().mean().item()
 
         self._metrics["completion_length"].append(completion_length)
+        gather_rewards = self.accelerator.gather_for_metrics(rewards)
+        reward_per_func = gather_rewards.mean(0)
 
-        reward_per_func = self.accelerator.gather_for_metrics(rewards_per_func).mean(0)
-        for i, reward_func in enumerate(self.reward_funcs):
-            reward_func_name = (
-                reward_func.config._name_or_path.split("/")[-1]
-                if isinstance(reward_func, PreTrainedModel)
-                else reward_func.__name__
-            )
-            self._metrics[f"rewards/{reward_func_name}"].append(
-                reward_per_func[i].item()
-            )
+        for i, name in enumerate(["format", "correct", "confidence", "length"]):
+            self._metrics[f"rewards/{name}"].append(reward_per_func[i].item())
 
-        gathered_rewards = self.accelerator.gather_for_metrics(rewards)
-        num_devices = gathered_rewards.size(0) // self.num_generations
-        rewards_per_device = gathered_rewards.view(num_devices, self.num_generations)
-        wrong_devices = (rewards_per_device < 1).all(dim=1)
-        wrong_ratio = wrong_devices.sum().item() / num_devices
-        correct_devices = (rewards_per_device >= 1).all(dim=1)
-        correct_ratio = correct_devices.sum().item() / num_devices
-
-        # 一个step中全对/全错的样本, 1 - all_wrong - all_correct是有效样本比例
-        # device = 1时，记录的是多个步骤平均值，所以可能在0-1之间
-        self._metrics["all_wrong"].append(wrong_ratio)
-        self._metrics["all_correct"].append(correct_ratio)
-
-        if shuffled_completion_ids is not None:
-            temporal_rewards_list = self.accelerator.gather_for_metrics(
-                temporal_rewards
-            )
-            self._metrics["temporal_rewards"].append(
-                temporal_rewards_list.mean().item()
-            )
-            del temporal_rewards_list
-        self._metrics["reward"].append(gathered_rewards.mean().item())
-        self._metrics["reward_std"].append(gathered_rewards.std().item())
+        all_reward_sum = gather_rewards.sum(dim=1)
+        self._metrics["reward"].append(all_reward_sum.mean().item())
+        self._metrics["reward_std"].append(all_reward_sum.std().item())
 
         # 释放剩余临时张量
         del (
-            gathered_rewards,
-            rewards_per_device,
-            wrong_devices,
-            correct_devices,
+            gather_rewards,
+            all_reward_sum,
             reward_per_func,
             rewards,
-            rewards_per_func,
             per_token_logps,
             completion_mask,
-            temporal_rewards,
         )
-        if shuffled_completion_ids is not None:
-            del (
-                shuffled_completion_ids,
-                shuffled_rewards_per_func,
-                temporal_rewards_per_func,
-            )
+
         torch.cuda.empty_cache()
         return loss
 
