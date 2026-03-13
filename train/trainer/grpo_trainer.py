@@ -109,7 +109,7 @@ class GRPOConfig(_GRPOConfig):
     )
     bottom_k_ratio: float = field(
         default=0.2,
-        metadata={"help": "当agg为bottom_k的时候, 设置k的大小, 默认后20%"},
+        metadata={"help": "当agg为bottom-k的时候, 设置k的大小, 默认后20%"},
     )
     alpha: float = field(default=0.5, metadata={"help": "置信度奖励的权重超参"})
     reward_per_100_tokens: float = field(
@@ -145,7 +145,7 @@ class ConfidenceRewardComputer:
     ):
         """
         mode: 'token' 或 'step'
-        inner_agg: 'mean', 'min', 'bottom_k' (Token -> Step)
+        inner_agg: 'mean', 'min', 'bottomk' (Token -> Step)
         outer_agg: 'mean', 'min' (Step -> Reward)
         """
         if alpha != 0:
@@ -172,7 +172,7 @@ class ConfidenceRewardComputer:
             return logprobs_tensor.mean().item()
         elif method == "min":
             return logprobs_tensor.min().item()
-        elif method == "bottom_k":
+        elif method == "bottomk":
             k = max(1, int(len(logprobs_tensor) * self.bottom_k_ratio))
             # 取最小的 K 个求均值
             bottom_k_vals, _ = torch.topk(logprobs_tensor, k, largest=False)
