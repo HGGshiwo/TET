@@ -12,30 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-from pathlib import Path
-import textwrap
 from collections import defaultdict
-from typing import Any, Callable, List, Optional, Union
-import random
+from typing import Callable, Optional, Union
 
 from peft import PeftModel
 import torch
-import torch.utils.data
 import transformers
 from datasets import Dataset, IterableDataset
 from packaging import version
 from transformers import (
-    AriaForConditionalGeneration,
-    AriaProcessor,
-    AutoModelForCausalLM,
-    AutoModelForSequenceClassification,
     AutoProcessor,
-    AutoTokenizer,
     GenerationConfig,
     PreTrainedModel,
     PreTrainedTokenizerBase,
-    Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
     Trainer,
     TrainerCallback,
@@ -45,7 +34,6 @@ from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
 from trl.data_utils import (
-    apply_chat_template,
     is_conversational,
     maybe_apply_chat_template,
 )
@@ -55,12 +43,12 @@ from trl.models import (
     unwrap_model_for_generation,
 )
 from trl.trainer.grpo_config import GRPOConfig as _GRPOConfig
-from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 from dataclasses import dataclass, field
 from data_utils import process_vision_info
 
 import copy
 
+from train.trainer.reward_model import RewardModel
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
@@ -98,24 +86,11 @@ class GRPOConfig(_GRPOConfig):
             )
         },
     )
-    reward_type: str = field(
-        default=None,
-        metadata={
-            "help": (
-                "baseline: 使用默认reward"
-                "mode_inner_outer: 例如step_mean_min -> mode=step, inner_agg=mean, outer_agg=min"
-            )
-        },
+    object_reward_ratio: float = field(
+        default=0, metadata={"help": "目标检测命中时的奖励比例"}
     )
-    bottom_k_ratio: float = field(
-        default=0.2,
-        metadata={"help": "当agg为bottom-k的时候, 设置k的大小, 默认后20%"},
-    )
-    alpha: float = field(default=0.5, metadata={"help": "置信度奖励的权重超参"})
-    reward_per_100_tokens: float = field(
-        default=0,
-        metadata={"help": "每生成100个token奖励的分数，默认为0表示不使用长度奖励"},
-    )
+    length_reward_ratio: float = field(default=0, metadata={"help": "长度奖励"})
+    keyframe_reward_ratio: float = field(default=0, metadata={"help": "关键帧命中奖励"})
 
 
 def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
@@ -131,221 +106,17 @@ def repeat(tensor: torch.Tensor, dim: int, repeat_num: int):
     return tensor.unsqueeze(dim).expand(expand_size).reshape(origin_size)
 
 
-class ConfidenceRewardComputer:
-    def __init__(
-        self,
-        split_token_id: int = None,
-        step_split_token_id: int = None,
-        mode="step",
-        inner_agg="mean",
-        outer_agg="min",
-        bottom_k_ratio=0.2,
-        alpha=0.5,
-        reward_per_100_tokens=0,
-    ):
-        """
-        mode: 'token' 或 'step'
-        inner_agg: 'mean', 'min', 'bottomk' (Token -> Step)
-        outer_agg: 'mean', 'min' (Step -> Reward)
-        """
-        if alpha != 0:
-            print(
-                "We are using ConfidenceRewardComputer with mode={}, inner_agg={}, outer_agg={}, bottom_k_ratio={}, alpha={}".format(
-                    mode, inner_agg, outer_agg, bottom_k_ratio, alpha
-                )
-            )
-        self.mode = mode
-        self.inner_agg = inner_agg
-        self.outer_agg = outer_agg
-        self.bottom_k_ratio = bottom_k_ratio
-        self.alpha = alpha
-        self.split_token_id = split_token_id
-        self.step_split_token_id = step_split_token_id
-        self.reward_per_100_tokens = reward_per_100_tokens
-
-    def _aggregate(self, logprobs_tensor, method):
-        """核心聚合算子"""
-        if len(logprobs_tensor) == 0:
-            return 0.0  # 防御性编程
-
-        if method == "mean":
-            return logprobs_tensor.mean().item()
-        elif method == "min":
-            return logprobs_tensor.min().item()
-        elif method == "bottomk":
-            k = max(1, int(len(logprobs_tensor) * self.bottom_k_ratio))
-            # 取最小的 K 个求均值
-            bottom_k_vals, _ = torch.topk(logprobs_tensor, k, largest=False)
-            return bottom_k_vals.mean().item()
-        else:
-            raise ValueError(f"Unknown aggregation method: {method}")
-
-    def compute_reward(self, all_logprobs, step_indices):
-        """
-        计算单条样本的置信度 Reward
-        all_logprobs: Tensor, 形状 [N], 所有输出的对数概率
-        step_indices: List[List[int]], 记录每个 step 包含的 token 索引。
-                      例如: [[0,1,2,3], [4,5,6], [7,8]]
-        """
-        # 情况 1: Token 级别 (直接对所有 token 聚合一次)
-        if self.mode == "token":
-            flat_indices = [idx for step in step_indices for idx in step]
-            if not flat_indices:  # 防御：如果全是空的
-                return 0.0
-
-            # all_logprobs 是 1D Tensor，直接用列表做索引提取
-            valid_logprobs = all_logprobs[flat_indices]
-            return self._aggregate(valid_logprobs, self.inner_agg)
-
-        # 情况 2: Step 级别 (两阶段聚合)
-        elif self.mode == "step":
-            step_scores = []
-
-            # Phase 1: Inner Aggregation (Token -> Step)
-            for indices in step_indices:
-                if len(indices) == 0:
-                    continue
-                step_logprobs = all_logprobs[indices]
-                step_score = self._aggregate(step_logprobs, self.inner_agg)
-                step_scores.append(step_score)
-
-            if not step_scores:
-                return 0.0  # 防御性编程
-
-            step_scores_tensor = torch.tensor(step_scores)
-
-            # Phase 2: Outer Aggregation (Step -> Reward)
-            final_reward = self._aggregate(step_scores_tensor, self.outer_agg)
-            return final_reward
-
-        else:
-            raise ValueError("Mode must be 'token' or 'step'")
-
-    def get_step_indices(self, completion_ids: torch.Tensor):
-        """获取每个step的token索引, 输入[0, 1, 2, 3, step, 4, 5, 6, step, 7, think, ..., think]
-        输出: [[0, 1, 2, 3], [4, 5, 6], [7]]"""
-        split_token_id = self.split_token_id
-        step_split_token_id = self.step_split_token_id
-
-        # 找到 split_token 出现的位置
-        split_positions = (completion_ids == split_token_id).nonzero(as_tuple=True)[0]
-        # 确定第一个部分的范围（从开头到第一个 split_token 之前）
-        if len(split_positions) != 2:
-            return None
-        else:
-            think_start, think_end = 0, split_positions[0].item()
-
-        # 提取第一个部分的 token ids
-        think_ids = completion_ids[think_start:think_end]
-
-        # 在第一个部分内找到 step_split_token 的位置
-        step_positions = (think_ids == step_split_token_id).nonzero(as_tuple=True)[0]
-
-        # 切分得到该样本的 step indices（绝对索引）
-        sample_step_indices = []
-        prev = 0
-        for pos in step_positions:
-            pos_item = pos.item()
-            if prev < pos_item:  # 非空 step
-                step_indices = list(range(think_start + prev, think_start + pos_item))
-                sample_step_indices.append(step_indices)
-            prev = pos_item + 1
-        # 处理最后一个 step
-        if prev < len(think_ids):
-            step_indices = list(range(think_start + prev, think_start + len(think_ids)))
-            sample_step_indices.append(step_indices)
-
-        return sample_step_indices
-
-    def __call__(
-        self,
-        batch_completion_ids: torch.Tensor,
-        batch_completion_logps: torch.Tensor,
-        correct_flags: List[int],
-        format_flags: List[int],
-        completion_mask: torch.Tensor,
-    ):
-        """
-        计算整个 batch 的置信度奖励
-        batch_completion_ids: Tensor, 形状 [B, N], 包含 B 条样本的 token ids
-        batch_completion_logprobs: Tensor, 形状 [B, N], 包含对应的对数概率
-
-        retrun: Tensor 形状[B, 4]:
-        [format_reward, correct_reward, confidence_reward, length_reward]
-        """
-
-        if self.alpha != 0:
-            rewards = []
-
-            for completion_ids, logprobs, mask in zip(
-                batch_completion_ids, batch_completion_logps, completion_mask
-            ):
-                mask = mask.bool()
-                logprobs = logprobs[mask]  # 只保留有效 token 的 logprobs
-                completion_ids = completion_ids[mask]
-
-                step_indices = self.get_step_indices(completion_ids)
-                if step_indices is None:
-                    rewards.append(0.0)  # 格式错误的样本奖励为0
-                else:
-                    reward = self.compute_reward(logprobs, step_indices)
-                    rewards.append(reward)
-
-            conf_scores = torch.tensor(rewards)
-
-            # 1. 组内 Z-Score 归一化 (让置信度相对化，高于平均的为正，低于平均的为负)
-            mean_conf = conf_scores.mean()
-            std_conf = conf_scores.std() + 1e-8
-            normalized_conf = (conf_scores - mean_conf) / std_conf
-        else:
-            normalized_conf = torch.zeros(
-                len(batch_completion_ids)
-            )  # 全零，避免后续计算错误
-
-        # 2. 计算最终 Reward
-
-        final_rewards = []
-
-        for i in range(len(correct_flags)):
-            final_reward = [0 for i in range(4)]
-            final_reward[0] = -0.5 if format_flags[i] == 0 else 0
-            final_reward[1] = 0 if correct_flags[i] == 0 else 1
-            if correct_flags[i] == 1:
-                # 答对了：置信度加成 (笃定且正确奖励更高，心虚但蒙对的奖励降低)
-                # 不管怎样不给负的奖励
-                r = self.alpha * torch.max(torch.tensor(0.0), normalized_conf[i]).item()
-            else:
-                if normalized_conf[i] > 0:
-                    # 答错了但很自信：给轻微惩罚，鼓励模型修正过于自信的错误
-                    r = -0.1 * normalized_conf[i].item()
-                else:
-                    # 答错了但是不自信: 0分
-                    r = 0.0
-            final_reward[2] = r
-            if self.reward_per_100_tokens is not None:
-                final_reward[3] = self.reward_per_100_tokens * (
-                    len(completion_ids) / 100
-                )
-
-            final_rewards.append(final_reward)
-
-        return final_rewards
-
-
 class Qwen2VLGRPOTrainer(Trainer):
     def __init__(
         self,
         model: Union[str, PreTrainedModel],
-        check_correct_func: Callable,
+        reward_model: RewardModel,
         args: GRPOConfig = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
             Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]
         ] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
-        reward_processing_classes: Optional[
-            Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]
-        ] = None,
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[
             Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]
@@ -366,28 +137,7 @@ class Qwen2VLGRPOTrainer(Trainer):
                 f"{self.__class__.__name__} only support train_batch_size==1!"
             )
 
-        if args.reward_type is not None:
-            assert (
-                split_token_id is not None
-            ), "reward_type is not None, but split_token_id is None!"
-            assert (
-                step_split_token_id is not None
-            ), "reward_type is not None, but step_split_token_id is None!"
-            assert args.alpha != 0, "reward_type is not None, but alpha = 0!"
-
-            mode, inner_agg, outer_agg = args.reward_type.split("_")
-        else:
-            mode, inner_agg, outer_agg = None, None, None
-        self.cfc = ConfidenceRewardComputer(
-            split_token_id=split_token_id,
-            step_split_token_id=step_split_token_id,
-            mode=mode,
-            inner_agg=inner_agg,
-            outer_agg=outer_agg,
-            bottom_k_ratio=args.bottom_k_ratio,
-            alpha=args.alpha,
-            reward_per_100_tokens=args.reward_per_100_tokens,
-        )
+        self.reward_model = reward_model
 
         # 模型初始化参数优化：启用flash attention减少显存，控制cache使用
         model_init_kwargs = args.model_init_kwargs or {}
@@ -452,43 +202,13 @@ class Qwen2VLGRPOTrainer(Trainer):
                     "请通过 `pip install unsloth` 安装。",
                     UserWarning,
                 )
-                # 回退到标准加载
-                if "Qwen2-VL" in model_id:
-                    model = Qwen2VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                elif "Qwen2.5-VL" in model_id:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                elif "Aria" in model_id:
-                    model_init_kwargs.pop("use_cache")
-                    model = AriaForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                else:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model, **model_init_kwargs
+                )
             else:
-                # 按模型类型加载，避免冗余判断
-                if "Qwen2-VL" in model_id:
-                    model = Qwen2VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                elif "Qwen2.5-VL" in model_id:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                elif "Aria" in model_id:
-                    model_init_kwargs.pop("use_cache")
-                    model = AriaForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
-                else:
-                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                        model, **model_init_kwargs
-                    )
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model, **model_init_kwargs
+                )
         else:
             if args.use_unsloth:
                 raise ValueError("use_unsloth = True时只支持传递模型路径!")
@@ -511,22 +231,9 @@ class Qwen2VLGRPOTrainer(Trainer):
             model.enable_input_require_grads()  # 【关键】强制让输入层输出需要梯度
 
         if is_deepspeed_zero3_enabled():
-            if "Qwen2-VL" in model_id:
-                self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(
-                    model_id, **model_init_kwargs
-                )
-            elif "Qwen2.5-VL" in model_id:
-                self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model_id, **model_init_kwargs
-                )
-            elif "Aria" in model_id:
-                self.ref_model = AriaForConditionalGeneration.from_pretrained(
-                    model_id, **model_init_kwargs
-                )
-            else:
-                self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model_id, **model_init_kwargs
-                )
+            self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_id, **model_init_kwargs
+            )
         elif not isinstance(model, PeftModel) and (peft_config is None):
             # 非 LoRA 全量模型：无法通过 disable_adapter() 获取初始权重，需独立创建 ref_model
             self.ref_model = create_reference_model(model)
@@ -538,7 +245,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         processing_class.pad_token_id = pad_token_id
         processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
 
-        self.check_correct = check_correct_func
 
         # 数据collator保持原有逻辑
         def data_collator(features):
@@ -782,17 +488,6 @@ class Qwen2VLGRPOTrainer(Trainer):
                 prompt_ids = prompt_completion_ids[:, :prompt_length]
                 completion_ids = prompt_completion_ids[:, prompt_length:]
 
-                if shuffled_prompt_ids is not None:
-                    shuffled_prompt_completion_ids = unwrapped_model.generate(
-                        **shuffled_prompt_inputs,
-                        generation_config=self.shuffled_generation_config,
-                        use_model_defaults=False,
-                    )
-                    shuffled_prompt_length = shuffled_prompt_ids.size(1)
-                    shuffled_completion_ids = shuffled_prompt_completion_ids[
-                        :, shuffled_prompt_length:
-                    ]
-                    del shuffled_prompt_completion_ids
 
         # 生成补全掩码：控制张量大小，避免冗余
         is_eos = completion_ids == self.processing_class.eos_token_id
@@ -870,23 +565,17 @@ class Qwen2VLGRPOTrainer(Trainer):
                 [{"role": "assistant", "content": completion}]
                 for completion in completions
             ]
+        reward_keys = [key for key in inputs[0].keys()]
+        reward_kwargs = {
+            key: [
+                example[key] for example in inputs for _ in range(self.num_generations)
+            ]
+            for key in reward_keys
+        }
 
-        prompts = [prompt for prompt in prompts for _ in range(self.num_generations)]
-        input_truth = [
-            example["truth"] for example in inputs for _ in range(self.num_generations)
-        ]
-
-        correct_flags, format_flags = self.check_correct(
-            completions=completions, truth=input_truth
-        )
-        # (B, 4) -> [format_reward, correct_reward, confidence_reward, length_reward]
-        raw_rewards = self.cfc(
-            batch_completion_ids=completion_ids,
-            batch_completion_logps=per_token_logps,
-            correct_flags=correct_flags,
-            format_flags=format_flags,
-            completion_mask=completion_mask,
-        )
+        # (B, 5) -> [format_reward, correct_reward, object_reward, keyframe_reward, length_reward]
+        completion_length = list(completion_mask.sum(dim=1).cpu().numpy())
+        raw_rewards = self.reward_model(completions=completions, completion_length=completion_length, **reward_kwargs)
         rewards = torch.tensor(raw_rewards, device=device, dtype=torch.float32)
         # 释放临时变量
         del completions, prompts, completion_ids
@@ -928,7 +617,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         gather_rewards = self.accelerator.gather_for_metrics(rewards)
         reward_per_func = gather_rewards.mean(0)
 
-        for i, name in enumerate(["format", "correct", "confidence", "length"]):
+        for i, name in enumerate(["format", "correct", "object", "keyframe", "length"]):
             self._metrics[f"rewards/{name}"].append(reward_per_func[i].item())
 
         all_reward_sum = gather_rewards.sum(dim=1)

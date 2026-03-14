@@ -2,29 +2,23 @@
   test_rate: 0.3
   eval_rate: 0.1
   answer_path: D:\work\实时对话\TET\train\outputs\cot0104\mvbench_test.jsonl
+  input_answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_mvbench\answer.yml
 
 - name: nextmc_test
   answer_path: D:\work\实时对话\TET\train\outputs\cot0104\nextmc_test.jsonl
+  input_answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_nextmc\answer.yml
   test_rate: 0.3
   eval_rate: 0.1
 
-# - name: videomme_long
-#   answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_videomme_long\answer.jsonl
-#   test_rate: 0.3
-#   eval_rate: 0.1
-
-# - name: videomme_medium
-#   answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_videomme_medium\answer.jsonl
-#   test_rate: 0.3
-#   eval_rate: 0.1
-
 - name: videomme_short
   answer_path: D:\work\实时对话\TET\train\outputs\cot0104\videomme_short.jsonl
+  input_answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_videomme_short\answer.yml
   test_rate: 0.3
   eval_rate: 0.1
 
 - name: intentqa_test
   answer_path: D:\work\实时对话\TET\train\outputs\cot0104\intentqa_test.jsonl
+  input_answer_path: D:\work\实时对话\TET\outputs\qwenvl_test_intentqa\answer.yml
   test_rate: 0.3
   eval_rate: 0.1
 

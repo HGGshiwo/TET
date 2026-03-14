@@ -21,16 +21,16 @@ from data_utils import (
     parse_multi_choice_response,
     prepare_inputs,
 )
+from train.trainer.reward_model import RewardModel
 from utils import load_data
 from peft import LoraConfig, get_peft_model
 from trainer.grpo_trainer import GRPOConfig, Qwen2VLGRPOTrainer
 from typing import List, Optional, Dict, Any
+import re
 
 USE_DOCKER = True
 base_model_id = "sft8_2-merge"
-output_model_id = "sft8_2-merge_r1_4"
-reward_type = "step_mean_mean"  #
-# reward_type = None
+output_model_id = "sft8_2-merge_r1_6"
 
 if not USE_DOCKER:
     data_cfg_path = "dataset_cfg.yml"
@@ -100,6 +100,9 @@ def accuracy_compare_func(output: str, truth: str) -> bool:
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
+    object_reward_ratio=0,
+    keyframe_reward_ratio=0.5,
+    length_reward_ratio=0.1,
     use_vllm=use_vllm,  # uses vLLM
     use_unsloth=use_unsloth,
     output_dir=OUTPUT_PATH,
@@ -132,13 +135,8 @@ training_args = GRPOConfig(
     },  # Gradient checkpointing options
     num_generations=4,
     generation_batch_size=8,  # not use
-    temporal=False,
-    len_control=False,
     temperature=1.2,
     beta=0.001,
-    reward_type=reward_type,
-    reward_per_100_tokens=0.1,
-    alpha=0.2,
 )
 
 # unsloth自己管理量化, 这里不传bnb
@@ -179,26 +177,16 @@ peft_config = LoraConfig(
 )
 
 
-def check_correct(completions: list, truth: list[str], **kwargs):
-    """Reward function that checks if the completion has a specific format."""
-    correct_flags, format_flags = [], []
-    for completion, sol in zip(completions, truth):
-        content = completion[0]["content"]
-        try:
-            res = prompt.format_output(content)
-            if not all([key in res for key in ["reasoning", "keyframes", "answer"]]):
-                correct_flags.append(0)
-                format_flags.append(0)
-            elif parse_multi_choice_response(res["answer"]) == sol:
-                correct_flags.append(1)
-                format_flags.append(1)
-            else:
-                correct_flags.append(0)
-                format_flags.append(1)
-        except Exception:
-            correct_flags.append(0)
-            format_flags.append(0)
-    return correct_flags, format_flags
+def format_output(input_str: str) -> Dict:
+    try:
+        res = prompt.format_output(input_str)
+        res["answer"] = parse_multi_choice_response(res["answer"])
+        if isinstance(res["keyframes"], str):
+            res["keyframes"] = [int(x) for x in re.findall(r"\d+", res["keyframes"])]
+        assert isinstance(res["reasoning"], list)
+        return res
+    except:
+        return None
 
 
 def compute_metrics(eval_pred):
@@ -206,19 +194,16 @@ def compute_metrics(eval_pred):
     logits, labels = eval_pred
     return {"accuracy": labels.mean()}
 
-
-trainer_kwargs = {}
-
-if training_args.reward_type is not None:
-    trainer_kwargs["split_token_id"] = processor.tokenizer.convert_tokens_to_ids(
-        prompt.split_token
-    )
-    trainer_kwargs["step_split_token_id"] = processor.tokenizer.convert_tokens_to_ids(
-        prompt.step_split_token
-    )
+reward_model = RewardModel(
+    format_output,
+    model_name="/datasets/all-MiniLM-L6-v2",
+    length_reward_ratio=training_args.length_reward_ratio,
+    object_reward_ratio=training_args.object_reward_ratio,
+    keyframe_reward_ratio=training_args.keyframe_reward_ratio,
+)
 
 trainer = Qwen2VLGRPOTrainer(
-    check_correct_func=check_correct,
+    reward_model=reward_model,
     args=training_args,
     model=model,
     train_dataset=train_dataset,
@@ -227,7 +212,6 @@ trainer = Qwen2VLGRPOTrainer(
     peft_config=peft_config,
     compute_metrics=compute_metrics,
     accuracy_compare_func=accuracy_compare_func,
-    **trainer_kwargs,
 )
 
 trainer.train()

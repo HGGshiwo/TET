@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   unsloth:
-    image: unsloth/unsloth
+    image: unsloth:grpo
     container_name: unsloth_dev
     restart: unless-stopped
     

@@ -59,7 +59,6 @@ Your output must be a JSON object containing exactly three keys: `"reasoning"`, 
 ```
 **Input Data:**
 `raw question`: {question}
-`key object`: {key_object}
 `frame select explain`: {frame_select_explain}
 `answer explain`: {answer_explain}
 `keyframe`: {keyframe}
@@ -78,7 +77,7 @@ async def task(runner, **data):
         qid = data["qid"]
         format_kwargs = {}
         format_kwargs["question"] = data["question"]
-        format_kwargs["key_object"] = runner.step1_obj_data[qid]
+        # format_kwargs["key_object"] = runner.step1_obj_data[qid]
         format_kwargs["frame_select_explain"] = [
             "\n".join(
                 d["explain"] for d in runner.step4_select2_data[qid]["raw_output"]

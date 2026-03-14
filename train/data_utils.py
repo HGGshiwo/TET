@@ -2,6 +2,7 @@ from shlex import join
 from typing import Callable, Optional, Union, Tuple, List, Any, Dict
 import time
 import os
+
 os.environ["FORCE_QWENVL_VIDEO_READER"] = "decord"
 import torch
 from qwen_vl_utils.vision_process import (
@@ -79,7 +80,7 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from dataset.builder import build_dataset
 from dataset.base import BaseDataset
-from utils import get_video_length, get_video_size, load_data, save_data
+from utils import get_cfg, get_video_length, get_video_size, load_data, save_data
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import inspect
 from datasets import Dataset
@@ -314,9 +315,15 @@ def format_data(sample, prompt: Prompt, test=False):
         {
             "truth": sample["truth"],
             "qid": sample["qid"],
-            "message": message,
+            "message": message,            
         }
     )
+    input_object = sample.get("input_object", None)
+    if input_object is not None:
+        out["input_object"] = input_object
+    input_keyframe = sample.get("input_keyframe", None)
+    if input_keyframe is not None:
+        out["input_keyframe"] = input_keyframe
     return out
 
 
@@ -368,6 +375,7 @@ def generate_dataset(
     for cfg in dataset_cfg:
         dataset_name = cfg["name"]
         answer_path = cfg.get("answer_path", None)
+        input_answer_path = cfg.get("input_answer_path", None)
         test_rate = cfg["test_rate"]
         eval_rate = cfg["eval_rate"]
         fps = cfg.get("fps", 1)
@@ -376,10 +384,27 @@ def generate_dataset(
         dataset = build_dataset(
             dataset_config=dataset_config, name=dataset_name, is_training=False
         )
+        object_path, keyframe_path = None, None
         if answer_path is not None:
             data_list = load_data(answer_path)
         else:
             assert test_rate == 1, "Eval or train dataset must provide answer_path"
+        
+        if input_answer_path is not None:
+            obj_cfg, dino_cfg, select_cfg, select2_cfg, answer_cfg = get_cfg(
+                input_answer_path
+            )
+            data_path = Path(__file__).parent.parent.joinpath("outputs")
+            object_path = data_path.joinpath(obj_cfg["exp_name"], "dino.jsonl")
+            keyframe_path = data_path.joinpath(answer_cfg["exp_name"], "answer.jsonl")
+        
+
+        if object_path is not None and os.path.exists(object_path):
+            object_list = load_data(object_path)
+
+        if keyframe_path is not None and os.path.exists(keyframe_path):
+            keyframe_list = load_data(keyframe_path)
+
         out = []
         for raw_data in dataset:
             qid = raw_data["qid"]
@@ -391,6 +416,17 @@ def generate_dataset(
                 if filter is not None and not filter(data):
                     continue
                 sample.update(data)
+            if object_path is not None:
+                object_data = object_list.get(qid, [])
+                object_data = list(set(obj.replace("'", "") for o in object_data.values() for obj in o["out"]))
+                sample["input_object"] = object_data
+
+            if keyframe_path is not None:
+                keyframe_data = keyframe_list.get(qid, None)
+                if keyframe_data is not None:
+                    # 输入cot前的keyframe
+                    sample["input_keyframe"] = keyframe_data.get("input_idx", [])
+
             video_path = os.path.join(dataset.config.video_path, raw_data["video_path"])
             sample = {
                 **sample,

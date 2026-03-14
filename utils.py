@@ -931,7 +931,8 @@ def get_cfg(cfg_path: str | Path, idx=None):
     out = []
     cur_cfg = load_data(cfg_path)
     for step in reversed(step_name[:idx]):
-        prev_cfg = load_data(cur_cfg[step])
+        data_path = Path(__file__).parent.joinpath(cur_cfg[step])
+        prev_cfg = load_data(data_path)
         out.insert(0, cur_cfg)
         cur_cfg = prev_cfg
     out.insert(0, cur_cfg)
