@@ -48,6 +48,7 @@ from data_utils import process_vision_info
 
 import copy
 
+from train.train_utils import get_IoU
 from train.trainer.reward_model import RewardModel
 
 if is_peft_available():
@@ -110,7 +111,7 @@ class Qwen2VLGRPOTrainer(Trainer):
     def __init__(
         self,
         model: Union[str, PreTrainedModel],
-        reward_model: RewardModel,
+        format_output: Callable,
         args: GRPOConfig = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[
@@ -125,8 +126,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         attn_implementation: str = "flash_attention_2",
         compute_metrics: Callable = None,
         accuracy_compare_func: Callable = None,
-        split_token_id: int = None,
-        step_split_token_id: int = None,
     ):
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -136,8 +135,14 @@ class Qwen2VLGRPOTrainer(Trainer):
             raise ValueError(
                 f"{self.__class__.__name__} only support train_batch_size==1!"
             )
-
-        self.reward_model = reward_model
+        self.format_output = format_output
+        self.reward_model = RewardModel(
+            format_output,
+            model_name="/datasets/all-MiniLM-L6-v2",
+            length_reward_ratio=args.length_reward_ratio,
+            object_reward_ratio=args.object_reward_ratio,
+            keyframe_reward_ratio=args.keyframe_reward_ratio,
+        )
 
         # 模型初始化参数优化：启用flash attention减少显存，控制cache使用
         model_init_kwargs = args.model_init_kwargs or {}
@@ -392,18 +397,23 @@ class Qwen2VLGRPOTrainer(Trainer):
                 out_ids[len(in_ids) :]
                 for in_ids, out_ids in zip(prompt_ids, generated_ids)
             ]
+            completion_mask = self.get_completion_mask(completion_ids)
+            completion_length = completion_mask.sum(dim=1).cpu().numpy()
             completions = self.processing_class.batch_decode(
                 completion_ids, skip_special_tokens=True
             )
 
         predictions = []
-        for completion, example in zip(completions, inputs):
+        for completion, example, length in zip(completions, inputs, completion_length):
+            prediction = [0 for i in range(3)] # coorect, keyframe-IoU, length 
             truth = example.get("truth")
             if truth is not None:
                 is_correct = self.accuracy_compare_func(completion, truth)
-                predictions.append(1.0 if is_correct else 0.0)
-            else:
-                predictions.append(0.0)
+                prediction[0] = 1.0 if is_correct else 0.0
+            res = self.format_output(completion)
+            prediction[1] = get_IoU(res["keyframe"], example["input_keyframe"])
+            prediction[2] = length
+            predictions.append(prediction)
 
         labels = torch.tensor(
             predictions, dtype=torch.float32, device=self.accelerator.device
@@ -412,6 +422,20 @@ class Qwen2VLGRPOTrainer(Trainer):
         logits = torch.zeros_like(labels)
         return (loss, logits, labels)
 
+    def get_completion_mask(self, completion_ids):
+        is_eos = completion_ids == self.processing_class.eos_token_id
+        device = self.accelerator.device
+        eos_idx = torch.full(
+            (is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device
+        )
+        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(
+            is_eos.size(0), -1
+        )
+        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        del is_eos, eos_idx, sequence_indices
+        return completion_mask
+    
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
@@ -490,23 +514,13 @@ class Qwen2VLGRPOTrainer(Trainer):
 
 
         # 生成补全掩码：控制张量大小，避免冗余
-        is_eos = completion_ids == self.processing_class.eos_token_id
         device = self.accelerator.device
-        eos_idx = torch.full(
-            (is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device
-        )
-        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(
-            is_eos.size(0), -1
-        )
-        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
-        # 释放临时张量
-        del is_eos, eos_idx, sequence_indices
+        completion_mask = self.get_completion_mask(completion_ids)
+        
 
         # repeat_num 为生成的序列总数（= batch_size * num_generations），用于将视觉张量与每条生成序列对应
         repeat_num = completion_ids.size(0)
-        completion_ids_len = completion_ids.size(1)
-
+        
         # 处理视觉输入张量：使用expand代替repeat（视图复用），减少显存
         prompt_inputs.pop("input_ids")
         prompt_inputs.pop("attention_mask")

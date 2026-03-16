@@ -30,7 +30,7 @@ import re
 
 USE_DOCKER = True
 base_model_id = "sft8_2-merge"
-output_model_id = "sft8_2-merge_r1_6"
+output_model_id = "sft8_2-merge_r1_7"
 
 if not USE_DOCKER:
     data_cfg_path = "dataset_cfg.yml"
@@ -100,7 +100,7 @@ def accuracy_compare_func(output: str, truth: str) -> bool:
 
 # Configure training arguments using GRPOConfig
 training_args = GRPOConfig(
-    object_reward_ratio=0,
+    object_reward_ratio=0.1,
     keyframe_reward_ratio=0.5,
     length_reward_ratio=0.1,
     use_vllm=use_vllm,  # uses vLLM
@@ -192,19 +192,13 @@ def format_output(input_str: str) -> Dict:
 def compute_metrics(eval_pred):
     # eval_pred.predictions 通常是 logits
     logits, labels = eval_pred
-    return {"accuracy": labels.mean()}
+    return {"accuracy": labels[:, 0].mean(), "IoU": labels[:, 1].mean(), "length": labels[:, 2].mean()}
 
-reward_model = RewardModel(
-    format_output,
-    model_name="/datasets/all-MiniLM-L6-v2",
-    length_reward_ratio=training_args.length_reward_ratio,
-    object_reward_ratio=training_args.object_reward_ratio,
-    keyframe_reward_ratio=training_args.keyframe_reward_ratio,
-)
+
 
 trainer = Qwen2VLGRPOTrainer(
-    reward_model=reward_model,
     args=training_args,
+    format_output=format_output,
     model=model,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,

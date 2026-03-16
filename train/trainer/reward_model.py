@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from typing import List, Tuple, Optional, Union
 import spacy
 
+from train.train_utils import get_IoU
+
 
 class TransformerSimilarity:
     """
@@ -247,9 +249,7 @@ class RewardModel:
                         reward[2] = reward[1] * self.object_reward_ratio * np.clip(object_reward, 0, 1)
 
                 if self.keyframe_reward_ratio != 0:
-                    s1 = set(keyframe)
-                    s2 = set(res["keyframes"])
-                    IoU = len(s1.intersection(s2)) / len(s1.union(s2))
+                    IoU = get_IoU(keyframe, res["keyframes"])
                     reward[3] = self.keyframe_reward_ratio * IoU
                 if self.length_reward_ratio != 0:
                     current_len = sum(len(r) for r in res["reasoning"])

@@ -1,3 +1,12 @@
+from typing import List
+
+
+def get_IoU(keyframe: List[int], gt: List[int]):
+    s1 = set(keyframe)
+    s2 = set(gt)
+    IoU = len(s1.intersection(s2)) / len(s1.union(s2))
+    return IoU
+
 def compress_consecutive_numbers(nums):
     """
     将数字列表中连续的数字转换为起始-结束的格式
