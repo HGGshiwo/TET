@@ -1,4 +1,6 @@
 import json
+import threading
+
 import yaml
 from pathlib import Path
 import base64, io
@@ -13,7 +15,7 @@ from openai import AsyncOpenAI, AsyncAzureOpenAI
 from dotenv import load_dotenv
 from collections import defaultdict
 from torchvision.utils import make_grid as tv_make_grid
-from typing import List, Generator
+from typing import Any, Dict, List, Generator, Union
 import os
 import requests
 from qwen_vl_utils import smart_resize
@@ -280,9 +282,11 @@ class OpenClipModel:
                 sim = sim.reshape(B, N, -1).max(dim=1).values
             return sim  # (B, M)
 
+
 class ClipModel:
     def __init__(self, pretrained_path):
         import clip
+
         pretrained_path = r"D:\models\ViT-B-32.pt"
         if pretrained_path is None:
             pretrained_path = ClipModel.pretrained_path
@@ -290,6 +294,7 @@ class ClipModel:
 
     def forward(self, keywards, images):
         import clip
+
         keywards = clip.tokenize(keywards).cuda()
         images = [self.preprocess(img) for img in images]
         images = torch.stack(images, dim=0).cuda()
@@ -336,12 +341,92 @@ class APIModel:
         return out.content
 
 
+class YOLOWorldModel(nn.Module):
+    """
+    YOLO-World 开放词汇目标检测模型的封装类。
+    支持通过文本提示动态指定检测类别，适用于图片列表的批量推理。
+    """
+
+    def __init__(self, pretrained_path: str = "yolov8s-world.pt"):
+        """
+        初始化模型。
+        :param pretrained_path: 预训练权重路径或Ultralytics模型名称（如'yolov8s-world.pt'）
+        :param device: 推理设备，'cuda'或'cpu'。若为None则自动选择可用GPU。
+        """
+        super().__init__()
+        from ultralytics import YOLO
+        self.model = YOLO(pretrained_path)
+    
+    
+    @torch.inference_mode()
+    def forward(
+        self,
+        classes: List[str],
+        images: List[Union[str, np.ndarray, Image.Image]],
+        conf_threshold: float = 0.2,
+        iou_threshold: float = 0.6,
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        对一组图像执行开放词汇目标检测。
+        :param images: 图像列表，每个元素可以是图像路径、numpy数组(BGR或RGB)或PIL Image
+        :param classes: 需要检测的类别名称列表（英文），例如 ['person', 'car', 'dog']
+        :param conf_threshold: 置信度阈值，低于此值的检测框将被过滤
+        :param iou_threshold: NMS的IoU阈值
+        :return: 列表，每个元素对应一张图像的检测结果。
+                 每张图像的结果是一个列表，每个检测框包含：
+                 {
+                     'bbox': [x1, y1, x2, y2],   # 边界框坐标（像素值）
+                     'score': float,              # 置信度
+                     'class_id': int,              # 类别ID（与classes列表索引对应）
+                     'class_name': str             # 类别名称
+                 }
+        """
+        if not classes:
+            # 如果没有指定类别，返回空列表（或可根据需求抛出异常）
+            return [[] for _ in range(len(images))]
+
+        # 设置当前检测的类别（YOLO-World会根据文本提示调整检测头）
+        self.model.set_classes(classes)
+
+        # 执行推理
+        results = self.model.predict(
+            source=images,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            verbose=False,  # 可选，关闭详细日志
+        )
+
+        # 解析结果为结构化输出
+        batch_outputs = []
+        for result in results:
+            detections = []
+            if result.boxes is not None:
+                boxes = result.boxes
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    score = float(box.conf[0])
+                    bbox = box.xyxy[0].tolist()  # [x1, y1, x2, y2]
+                    class_name = classes[cls_id] if cls_id < len(classes) else "unknown"
+                    detections.append(
+                        {
+                            "bbox": bbox,
+                            "score": score,
+                            "class_id": cls_id,
+                            "class_name": class_name,
+                        }
+                    )
+            batch_outputs.append(detections)
+
+        return batch_outputs
+
+
 def create_model(model_type, pretrained_path=None):
     model_type_map = {
         "qwenvl": QwenModel,
         "clip": ClipModel,
         "open_clip": OpenClipModel,
         "api": APIModel,
+        "yolo_world": YOLOWorldModel,
     }
     if model_type not in model_type_map:
         raise ValueError(f"Unsupported model type: {model_type}")
@@ -937,3 +1022,30 @@ def get_cfg(cfg_path: str | Path, idx=None):
         cur_cfg = prev_cfg
     out.insert(0, cur_cfg)
     return out
+
+
+class IterRecorder:
+    def __init__(self):
+        self.records = {}
+        self.iter = 0
+        self.cur_record = None
+
+    def record(self, key, value):
+        if self.cur_record is None:
+            self.start()
+        _value = self.cur_record.get(key, [])
+        _value.append(value)
+        self.cur_record[key] = _value
+
+    def start(self, name=None):
+        self.cur_record = {}
+        if name is None:
+            name = f"Iter {self.iter}"
+            self.iter += 1
+        self.records[name] = self.cur_record
+
+    def print(self):
+        for name, record in self.records.items():
+            print(f"{name}:")
+            for key, values in record.items():
+                print(f"    {key}: {np.mean(values):.2f}")

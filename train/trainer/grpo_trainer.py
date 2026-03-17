@@ -250,7 +250,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         processing_class.pad_token_id = pad_token_id
         processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
 
-
         # 数据collator保持原有逻辑
         def data_collator(features):
             return features
@@ -402,7 +401,7 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         predictions = []
         for completion, example, length in zip(completions, inputs, completion_length):
-            prediction = [0 for i in range(3)] # coorect, keyframe-IoU, length 
+            prediction = [0 for i in range(3)]  # coorect, keyframe-IoU, length
             truth = example.get("truth")
             if truth is not None:
                 is_correct = self.accuracy_compare_func(completion, truth)
@@ -419,9 +418,9 @@ class Qwen2VLGRPOTrainer(Trainer):
         logits = torch.zeros_like(labels)
         return (loss, logits, labels)
 
-    def get_completion_mask(self, completion_ids):
-        is_eos = completion_ids == self.processing_class.eos_token_id
-        device = self.accelerator.device
+    @staticmethod
+    def get_completion_mask(eos_token_id, completion_ids, device="cuda"):
+        is_eos = completion_ids == eos_token_id
         eos_idx = torch.full(
             (is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device
         )
@@ -432,7 +431,7 @@ class Qwen2VLGRPOTrainer(Trainer):
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
         del is_eos, eos_idx, sequence_indices
         return completion_mask
-    
+
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
@@ -509,15 +508,15 @@ class Qwen2VLGRPOTrainer(Trainer):
                 prompt_ids = prompt_completion_ids[:, :prompt_length]
                 completion_ids = prompt_completion_ids[:, prompt_length:]
 
-
         # 生成补全掩码：控制张量大小，避免冗余
         device = self.accelerator.device
-        completion_mask = self.get_completion_mask(completion_ids)
-        
+        completion_mask = Qwen2VLGRPOTrainer.get_completion_mask(
+            self.processing_class.eos_token_id, completion_ids, device
+        )
 
         # repeat_num 为生成的序列总数（= batch_size * num_generations），用于将视觉张量与每条生成序列对应
         repeat_num = completion_ids.size(0)
-        
+
         # 处理视觉输入张量：使用expand代替repeat（视图复用），减少显存
         prompt_inputs.pop("input_ids")
         prompt_inputs.pop("attention_mask")
@@ -586,7 +585,11 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # (B, 5) -> [format_reward, correct_reward, object_reward, keyframe_reward, length_reward]
         completion_length = list(completion_mask.sum(dim=1).cpu().numpy())
-        raw_rewards = self.reward_model(completions=completions, completion_length=completion_length, **reward_kwargs)
+        raw_rewards = self.reward_model(
+            completions=completions,
+            completion_length=completion_length,
+            **reward_kwargs,
+        )
         rewards = torch.tensor(raw_rewards, device=device, dtype=torch.float32)
         # 释放临时变量
         del completions, prompts, completion_ids

@@ -1,7 +1,14 @@
+from operator import inv
+import re
+from typing import Dict
+
+from moviepy import video
+from typing import Any
+
 from runner import AsyncRunner
 import json
 import asyncio
-from utils import load_data
+from utils import IterRecorder, load_data
 from utils import (
     create_model,
     get_frame_by_idx,
@@ -13,6 +20,8 @@ from pathlib import Path
 import numpy as np
 from utils import parse_json, parse_list, chunk
 from utils import save_data, print_cfg
+
+recorder = IterRecorder()
 
 example = {
     "frame": [1, 2, 3, 4, 5],
@@ -27,10 +36,10 @@ PROMPT = f"""Here is a question related to the video and the frames related to t
 Finally, output a JSON string, where the "explain" field records your reasoning and analysis process, including the reasons for deleting or retaining frames, and the "frame" field contains a JSON list. Each item in the list represents the frame numbers of segments related to the question, and do not add any comments in JSON. Below is the question: [question]. Output example:{json.dumps(example)}, Please provide your answer:
 """
 
-
-async def frame_select(runner, **data):
-    max_frame = runner.max_frame
+def get_valid(data):
     qid = data["qid"]
+    max_frame = runner.max_frame
+    
     video_path = runner.dataset.config.video_path
     video_path = Path(video_path).joinpath(data["video_path"])
     video_size = get_video_size(video_path, 1)
@@ -49,7 +58,26 @@ async def frame_select(runner, **data):
     if uniform_sample:
         valid = np.linspace(0, last - 1, len(valid)).astype(int).tolist()
         valid = sorted(set(valid))
+    recorder.record("input_frame", len(valid))
+    return valid, video_path, last
 
+def frame_filter(runner: AsyncRunner, data: Dict[str, Any]):
+    if not runner.data_exist(data):
+        return True
+    output_data = runner.processed[data[runner.iter_key]]
+    invalid = output_data.get("invalid", False)
+    relevant_idx = output_data["relevant_idx"]
+    _, _, _ = get_valid(data)
+    recorder.record("output_frame", len(relevant_idx))
+    recorder.record("valid", 0 if invalid else 1)
+    return False
+    
+    
+async def frame_select(runner, **data):
+    
+    qid = data["qid"]
+    valid, video_path, last = get_valid(data)
+    
     relevant_idx = []
     question = data["question"]
     if question_only:
@@ -65,7 +93,8 @@ async def frame_select(runner, **data):
     if save_img:
         save_dir = Path(output_path.replace(".jsonl", "_image"))
         save_dir.mkdir(parents=True, exist_ok=True)
-                    
+    
+            
     for i in range(0, len(valid), frame_per_req):
         chunk_valid = valid[i : i + frame_per_req]
         j = i + len(chunk_valid) - 1
@@ -100,7 +129,8 @@ async def frame_select(runner, **data):
             set(np.linspace(0, last - 1, max_frame).astype(int).tolist())
         )
         invalid = True
-
+    recorder.record("output_frame", len(relevant_idx))
+    recorder.record("valid", 0 if invalid else 1)
     return {
         "qid": data["qid"],
         "relevant_idx": relevant_idx,
@@ -109,6 +139,7 @@ async def frame_select(runner, **data):
         "invalid": invalid,
         "input_idx": valid,
     }
+
 
 
 if __name__ == "__main__":
@@ -158,12 +189,14 @@ if __name__ == "__main__":
             select_data_list.append(output_path)
             
     for i in range(iter_num):
+        recorder.start()
         print(f"Select frame round: [{i + 1}/{iter_num}]")
         output_path = output_path_list[i]
         select_data = load_data(select_data_list[i])
         runner = AsyncRunner(
             frame_select,
             output_path,
+            filter=frame_filter,
             iter_key="qid",
             dataset=dataset_name,
             max_frame=max_frame,
@@ -171,40 +204,6 @@ if __name__ == "__main__":
         uniform_sample = False # 只对第一步进行消融
         asyncio.run(runner())
         max_frame = max_frame // 2
-    
-    compress_rates = [[] for _ in range(iter_num)]
-    valid_rates = [[] for _ in range(iter_num)]
-    frame_nums = [[] for _ in range(iter_num)]
-    outs = [load_data(output_path) for output_path in output_path_list]
-    select_datas = [load_data(select_data_list[0])] + outs[:-1]
-    for i in range(iter_num):    
-        out = outs[i]
-        select_data = select_datas[i]
-        compress_rate = compress_rates[i]
-        valid_rate = valid_rates[i]
-        frame_num = frame_nums[i]
-        for item in runner.dataset:
-            if item["qid"] not in out:
-                print(f"Warning: {item['qid']} not in output data")
-                continue
-            if item["qid"] not in select_data:
-                print(f"Warning: {item['qid']} not in select data")
-                continue
-            out_item = out[item["qid"]]
-            if out_item["invalid"]:
-                valid_rate.append(0)
-            else:
-                valid_rate.append(1)
-                rate = len(out_item["relevant_idx"]) / len(
-                    select_data[item["qid"]]["relevant_idx"]
-                )
-                compress_rate.append(rate)
-                frame_num.append(len(out_item["relevant_idx"]))
-    for i in range(iter_num):
-        compress_rate = compress_rates[i]
-        frame_num = frame_nums[i]
-        valid_rate = valid_rates[i]
-        print(f"Iter {i+1}:")
-        print(f"compress rate: {np.mean(compress_rate)*100:.2f}%")
-        print(f"avg frames: {np.mean(frame_num):.2f}")
-        print(f"valid: {np.mean(valid_rate):.2f}({sum(valid_rate)}/{len(valid_rate)})")
+        
+        
+    recorder.print()

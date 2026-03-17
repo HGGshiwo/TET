@@ -61,10 +61,13 @@ class Runner:
         self.task = task
         self.tasks = []
         self.invalid = 0
-        self.filter = filter
+        self.filter = filter if filter is not None else Runner.default_filter
         self.batch_size = batch_size
         self.total = 0
 
+    def default_filter(self, data):
+        return not self.data_exist(data)
+    
     def create_submit(self, **kwargs):
         # return kwargs["excutor"].submit
         if self.batch_size == 1:
@@ -87,14 +90,15 @@ class Runner:
 
         return as_completed
 
+    def data_exist(self, data):
+        return data[self.iter_key] in self.processed
+
     def data_iter(self):
         data_iter = (
             self.dataset.get_video_info() if self.iter_key == "vid" else self.dataset
         )
         batch_data = []
         for data in data_iter:
-            if data[self.iter_key] in self.processed:
-                continue
             if self.filter is not None and self.filter(self, data) is False:
                 continue
             self.total += 1

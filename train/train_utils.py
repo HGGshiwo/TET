@@ -4,7 +4,7 @@ from typing import List
 def get_IoU(keyframe: List[int], gt: List[int]):
     s1 = set(keyframe)
     s2 = set(gt)
-    IoU = len(s1.intersection(s2)) / len(s1.union(s2))
+    IoU = len(s1.intersection(s2)) / (len(s1.union(s2)) + 1e-8)
     return IoU
 
 def compress_consecutive_numbers(nums):

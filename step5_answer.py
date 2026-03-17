@@ -1,7 +1,9 @@
+from typing import Dict, Any
+
 from runner import AsyncRunner
 import json
 import asyncio
-from utils import load_data, send_post_request
+from utils import IterRecorder, load_data, send_post_request
 from utils import (
     parse_json,
     create_model,
@@ -28,9 +30,9 @@ PROMPT1_cont = f"This is a question related to the video: [question]. Here are t
 
 PROMPT1_frame_idx = f"This is a question related to the video: [question]. Here are the frames related to the question. The image is composed of several frames stitched together in chronological order, with each frame separated by a black border. The upper left corner of each frame indicates the current frame number and the total number of frames is [frame_num]. Try to answer the questions based on the information in the picture. Output a json format string containing 3 keys: 'answer' and 'explain', 'confidence', where the value corresponding to 'answer' is a single letter (A, B, C, D, E), indicating the answer you choose, the value corresponding to 'explain' is used to explain how you eliminated the wrong options and choose the final answer, and 'confidence' is used to indicate your confidence in the answer, choose from 1, 2, 3. 1 means uncertain, 2 means partially certain, and 3 means very certain. Do not add any comments in JSON. Output example: {json.dumps(example)}"
 
+recorder = IterRecorder()
 
-async def frame_select(runner, **data):
-    qid = data["qid"]
+def get_valid(data):
     video_path = runner.dataset.config.video_path
     video_path = Path(video_path).joinpath(data["video_path"])
     video_size = get_video_size(video_path, 1)
@@ -59,7 +61,19 @@ async def frame_select(runner, **data):
             valid = [select1_valid[i] for i in valid_idx if select1_valid[i] >= 0 and select1_valid[i] < last]
         else:
             raise ValueError("uniform_target must be one of 'both', 'step1', 'step2'")
+    recorder.record("input_frame", len(valid))
+    return valid, video_path, last
 
+def frame_filter(runner: AsyncRunner, data: Dict[str, Any]):
+    if not runner.data_exist(data):
+        return True
+    _, _, _ = get_valid(data)
+    return False
+
+async def frame_select(runner, **data):
+    qid = data["qid"]
+    
+    valid, video_path, last = get_valid(data)
     image = None
     frames = get_frame_by_idx(video_path, valid)
     save_dir = Path(output_path.replace(".jsonl", "_image"))
@@ -110,10 +124,17 @@ async def frame_select(runner, **data):
 
 
 if __name__ == "__main__":
-    _avg_frame = []
+    # iter_num = None # 是否需要测试第n次迭代的结果
+    # 0表示的是select1, None表示最后一次select, 1表示迭代一次，依此类推
+    iter_num = "tree"
+    
+    select2_name = "" if iter_num is None else f"_{iter_num}"
+    
     cfg = load_data("./configs/answer.yml")
+    
     select2_cfg = load_data(cfg["select2"])
     select_cfg = load_data(select2_cfg["select"])
+
     dino_cfg = load_data(select_cfg["dino"])
     obj_cfg = load_data(dino_cfg["obj"])
 
@@ -151,11 +172,18 @@ if __name__ == "__main__":
         exp_name = obj_cfg["exp_name"]
     cfg["exp_name"] = exp_name
 
-    output_path = f"./outputs/{exp_name}/answer.jsonl"
+    output_path = f"./outputs/{exp_name}/answer{select2_name}.jsonl"
     save_data(cfg, f"./outputs/{exp_name}/answer.yml")
     print_cfg(cfg)
-    select_data2 = load_data(f"./outputs/{select2_cfg['exp_name']}/select2.jsonl")
     select_data1 = load_data(f"./outputs/{select_cfg['exp_name']}/select.jsonl")
+    
+    if iter_num == "tree":
+        tree_data = load_data(r"D:\work\实时对话\VideoTree\results\depth_expansion_res.json")
+        select_data2 = {item['name']: dict(relevant_idx=item['sorted_values']) for item in tree_data}
+    elif iter_num == 0:
+        select_data2 = select_data1
+    else:
+        select_data2 = load_data(f"./outputs/{select2_cfg['exp_name']}/select2{select2_name}.jsonl")
     
     model = create_model("api", model_name)
 
@@ -163,6 +191,7 @@ if __name__ == "__main__":
         frame_select,
         output_path,
         iter_key="qid",
+        filter=frame_filter,
         dataset=dataset_name,
     )
     asyncio.run(runner())
@@ -187,8 +216,7 @@ if __name__ == "__main__":
                 answers[item["qid"]] = 0
         else:
             out = compute_metrics(pred[answer_key], item, True)
-        if "input_idx" in pred:
-            _avg_frame.append(len(pred["input_idx"]))
+    recorder.print()
     if not is_egoschema_full:
         failed = out.pop("failed")
         failed_path = output_path.replace(".jsonl", ".txt")
@@ -203,5 +231,3 @@ if __name__ == "__main__":
             print(f"Response Content:\n{response.text}")
         except Exception as e:
             print(f"Error sending POST request: {e}")
-    if len(_avg_frame) != 0:
-        print(f"avg frames: {np.mean(_avg_frame)}")

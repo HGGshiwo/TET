@@ -56,7 +56,7 @@ def frame_select_dino(runner, model, **data):
             pred_obj = []
         else:
             pred_obj = runner.detect_data[data["qid"]]["pred"]
-            try:     
+            try:
                 if runner.question_only:
                     pred_obj = pred_obj["question"]
                 else:
@@ -66,6 +66,7 @@ def frame_select_dino(runner, model, **data):
                     pred_obj = list(set(pred_obj))
             except Exception:
                 import traceback
+
                 traceback.print_exc()
                 pred_obj = []
 
@@ -145,6 +146,7 @@ def frame_select_dino(runner, model, **data):
         return {"qid": data["qid"], "results": results, "last": len(images)}
     except Exception as e:
         import traceback
+
         print(f"Error in {data['qid']}: {e}")
         traceback.print_exc()
         return None
@@ -194,6 +196,48 @@ def frame_select_qwen(runner, model, data):
         return [None for _ in data["frame"].idx]
 
 
+def frame_select_yolo(runner, model, data):
+    try:
+        if data["qid"] not in runner.detect_data:
+            pred_obj = []
+        else:
+            pred_obj = runner.detect_data[data["qid"]]["pred"]
+            if runner.question_only:
+                pred_obj = pred_obj["question"]
+            else:
+                pred_obj = [
+                    item for item_list in pred_obj.values() for item in item_list
+                ]
+                pred_obj = list(set(pred_obj))
+
+        pred_obj = [obj.lower() for obj in pred_obj]
+        pred_obj = [obj for obj in pred_obj if obj.lower() != "c"]
+        pred_obj = [obj.lower() for obj in pred_obj]
+
+        if len(pred_obj) == 0:
+            return [
+                {"qid": data["qid"], "idx": idx, "out": []} for idx in data["frame"].idx
+            ]
+
+        batch_prompt = pred_obj
+        batch_frame = data["frame"].load()
+        model_out = model.forward(batch_prompt, batch_frame)
+        ret = []
+        for out, idx in zip(model_out, data["frame"].idx):
+            try:
+                o = [o["class_name"] for o in out]
+            except Exception as e:
+                o = None
+            ret.append({"qid": data["qid"], "idx": idx, "out": o, "raw": out})
+        return ret
+    except Exception as e:
+        import traceback
+
+        print(f"Error in {data['qid']}: {e}")
+        traceback.print_exc()
+        return [None for _ in data["frame"].idx]
+
+
 if __name__ == "__main__":
     cfg = load_data("./configs/dino.yml")
     question_only = cfg["question_only"]  # 是否只使用问题中的对象
@@ -204,6 +248,16 @@ if __name__ == "__main__":
     if exp_name is None:
         exp_name = obj_cfg["exp_name"]
         cfg["exp_name"] = exp_name
+    if "yolo" in model_path.lower():
+        conf_threshold = cfg.get("conf_threshold", None)
+        if conf_threshold is None:
+            cfg["conf_threshold"] = 0.2
+            conf_threshold = 0.2
+
+        iou_threshold = cfg.get("iou_threshold", None)
+        if iou_threshold is None:
+            cfg["iou_threshold"] = 0.6
+            iou_threshold = 0.6
 
     save_data(cfg, f"./outputs/{exp_name}/dino.yml")
     print_cfg(cfg)
@@ -222,6 +276,21 @@ if __name__ == "__main__":
         model_type = cfg.get("model_type", "qwenvl")
         new_kwargs = {
             "task": frame_select_qwen,
+            "iter_frame": True,
+            "batch_size": 8,
+            "model_class": partial(
+                create_model, model_type=model_type, pretrained_path=model_path
+            ),
+        }
+        kwargs.update(new_kwargs)
+        model_class = partial(
+            create_model, model_type=model_type, pretrained_path=model_path
+        )
+    elif "yolo" in cfg["model_path"].lower():
+        model_type = cfg.get("model_type", "yolo_world")
+
+        new_kwargs = {
+            "task": frame_select_yolo,
             "iter_frame": True,
             "batch_size": 8,
             "model_class": partial(

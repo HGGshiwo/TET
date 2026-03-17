@@ -140,12 +140,16 @@ if __name__ == "__main__":
     dino_cfg = load_data(cfg["dino"])
     obj_cfg = load_data(dino_cfg["obj"])
     model_name = cfg["model_name"]
-    use_dino = "qwen" not in dino_cfg["model_path"].lower()
+    use_dino = "dino" in dino_cfg["model_path"].lower()
+    use_qwen = "qwen" in dino_cfg["model_path"].lower()
+    use_yolo = "yolo" in dino_cfg["model_path"].lower()
     dataset_name = obj_cfg["dataset_name"]
     question_only = cfg.get("question_only", True)
 
     if use_dino:
         single_obj = dino_cfg["single_obj"]  # 是否只使用单个对象
+        
+    if use_dino:    
         input_data = load_data(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl")
     else:
         input_data = load_jsonl2dict(f"./outputs/{dino_cfg['exp_name']}/dino.jsonl") 
