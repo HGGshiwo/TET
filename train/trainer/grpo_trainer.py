@@ -393,10 +393,7 @@ class Qwen2VLGRPOTrainer(Trainer):
                     generation_config=eval_gen_config,
                     use_model_defaults=False,  # 不使用模型默认值, 否则可能会覆盖generation_config
                 )
-            completion_ids = [
-                out_ids[len(in_ids) :]
-                for in_ids, out_ids in zip(prompt_ids, generated_ids)
-            ]
+            completion_ids = generated_ids[:, prompt_ids.size(1) :] # padding是left，所以可以这样切分没问题
             completion_mask = self.get_completion_mask(completion_ids)
             completion_length = completion_mask.sum(dim=1).cpu().numpy()
             completions = self.processing_class.batch_decode(
@@ -411,14 +408,14 @@ class Qwen2VLGRPOTrainer(Trainer):
                 is_correct = self.accuracy_compare_func(completion, truth)
                 prediction[0] = 1.0 if is_correct else 0.0
             res = self.format_output(completion)
-            prediction[1] = get_IoU(res["keyframe"], example["input_keyframe"])
+            prediction[1] = get_IoU(res["keyframes"], example["input_keyframe"])
             prediction[2] = length
             predictions.append(prediction)
 
         labels = torch.tensor(
             predictions, dtype=torch.float32, device=self.accelerator.device
         )
-        loss = torch.zeros_like(labels)
+        loss = torch.tensor(0.0, device=self.accelerator.device)  # 评估时不计算损失，返回0
         logits = torch.zeros_like(labels)
         return (loss, logits, labels)
 
