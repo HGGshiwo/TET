@@ -407,7 +407,8 @@ class Qwen2VLGRPOTrainer(Trainer):
                 is_correct = self.accuracy_compare_func(completion, truth)
                 prediction[0] = 1.0 if is_correct else 0.0
             res = self.format_output(completion)
-            prediction[1] = get_IoU(res["keyframes"], example["input_keyframe"])
+            if res is not None:
+                prediction[1] = get_IoU(res["keyframes"], example["input_keyframe"])
             prediction[2] = length
             predictions.append(prediction)
 
